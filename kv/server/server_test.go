@@ -346,3 +346,53 @@ func TestIterWithRawDelete1(t *testing.T) {
 		i++
 	}
 }
+
+// func TestConcurrentTxnAccess(t *testing.T) {
+// 	opts := badger.DefaultOptions
+// 	path := t.TempDir()
+// 	opts.Dir = path
+// 	opts.ValueDir = path
+// 	db, err := badger.Open(opts)
+// 	if err != nil {
+// 		t.Fatalf("failed to open Badger DB: %v", err)
+// 	}
+// 	defer db.Close()
+
+// 	// 写入一些基础数据
+// 	db.Update(func(txn *badger.Txn) error {
+// 		for i := 0; i < 1000; i++ {
+// 			txn.Set([]byte(fmt.Sprintf("key-%d", i)), []byte("value"))
+// 		}
+// 		return nil
+// 	})
+
+// 	// 创建只读事务
+// 	txn := db.NewTransaction(false)
+// 	defer txn.Discard()
+
+// 	var wg sync.WaitGroup
+// 	numGoroutines := 20
+// 	numRounds := 1000
+// 	it := txn.NewIterator(badger.DefaultIteratorOptions)
+// 	for i := 0; i < numGoroutines; i++ {
+// 		wg.Add(1)
+// 		go func(id int) {
+// 			defer wg.Done()
+
+// 			for j := 0; j < numRounds; j++ {
+// 				if j%2 == 0 {
+// 					key := []byte(fmt.Sprintf("key-%d", j%1000))
+// 					_, _ = txn.Get(key)
+// 				} else {
+
+// 					for it.Rewind(); it.Valid(); it.Next() {
+// 						_ = it.Item().Key()
+// 					}
+// 					it.Close()
+// 				}
+// 			}
+// 		}(i)
+// 	}
+
+// 	wg.Wait()
+// }
