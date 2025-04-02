@@ -39,7 +39,11 @@ type StandAloneStorageReader struct {
 }
 
 func (sr *StandAloneStorageReader) GetCF(cf string, key []byte) ([]byte, error) {
-	return engine_util.GetCFFromTxn(sr.txn, cf, key)
+	value, err := engine_util.GetCFFromTxn(sr.txn, cf, key)
+	if err == badger.ErrKeyNotFound {
+		return nil, nil
+	}
+	return value, err
 }
 
 func (sr *StandAloneStorageReader) IterCF(cf string) engine_util.DBIterator {
@@ -52,7 +56,6 @@ func (sr *StandAloneStorageReader) Close() {
 
 func (s *StandAloneStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, error) {
 	txn := s.db.NewTransaction(false)
-
 	// 当前无错误可能，这里预留error保证接口通用性
 	return &StandAloneStorageReader{txn: txn}, nil
 }

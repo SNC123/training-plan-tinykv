@@ -60,10 +60,10 @@ type BadgerIterator struct {
 }
 
 func NewCFIterator(cf string, txn *badger.Txn) *BadgerIterator {
-	return &BadgerIterator{
-		iter:   txn.NewIterator(badger.DefaultIteratorOptions),
-		prefix: cf + "_",
-	}
+	iter := txn.NewIterator(badger.DefaultIteratorOptions)
+	it := &BadgerIterator{iter: iter, prefix: cf + "_"}
+	it.Seek(nil)
+	return it
 }
 
 func (it *BadgerIterator) Item() DBItem {

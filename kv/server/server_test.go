@@ -217,7 +217,7 @@ func TestRawScan1(t *testing.T) {
 	Set(s, cf, []byte{5}, []byte{233, 5})
 
 	req := &kvrpcpb.RawScanRequest{
-		StartKey: []byte{1},
+		StartKey: []byte{2},
 		Limit:    3,
 		Cf:       cf,
 	}
@@ -226,7 +226,7 @@ func TestRawScan1(t *testing.T) {
 	assert.Nil(t, err)
 
 	assert.Equal(t, 3, len(resp.Kvs))
-	expectedKeys := [][]byte{{1}, {2}, {3}}
+	expectedKeys := [][]byte{{2}, {3}, {4}}
 	for i, kv := range resp.Kvs {
 		assert.Equal(t, expectedKeys[i], kv.Key)
 		assert.Equal(t, append([]byte{233}, expectedKeys[i]...), kv.Value)
@@ -254,12 +254,12 @@ func TestRawScanAfterRawPut1(t *testing.T) {
 	}
 
 	scan := &kvrpcpb.RawScanRequest{
-		StartKey: []byte{1},
+		StartKey: []byte{2},
 		Limit:    10,
 		Cf:       cf,
 	}
 
-	expectedKeys := [][]byte{{1}, {2}, {3}, {4}, {5}}
+	expectedKeys := [][]byte{{2}, {3}, {4}, {5}}
 
 	_, err := server.RawPut(nil, put)
 	assert.Nil(t, err)
@@ -347,6 +347,8 @@ func TestIterWithRawDelete1(t *testing.T) {
 	}
 }
 
+// 验证badger的txn是否如文档中描述的那样未实现线程安全
+// 答案：文档中描述正确，RACE条件下线程不安全
 // func TestConcurrentTxnAccess(t *testing.T) {
 // 	opts := badger.DefaultOptions
 // 	path := t.TempDir()
