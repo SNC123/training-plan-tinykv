@@ -366,6 +366,7 @@ func (r *Raft) stepFollower(m pb.Message) error {
 	case pb.MessageType_MsgRequestVote:
 		if r.Vote == 0 || r.Vote == m.From {
 			r.sendRequestVoteResp(m.From, false)
+			r.Vote = m.From
 		} else {
 			r.sendRequestVoteResp(m.From, true)
 		}
