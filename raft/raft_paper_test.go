@@ -886,11 +886,12 @@ type messageSlice []pb.Message
 func (s messageSlice) Len() int           { return len(s) }
 func (s messageSlice) Less(i, j int) bool { return fmt.Sprint(s[i]) < fmt.Sprint(s[j]) }
 func (s messageSlice) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
-
 func commitNoopEntry(r *Raft, s *MemoryStorage) {
+
 	if r.State != StateLeader {
 		panic("it should only be used when it is the leader")
 	}
+	// TO CHECK 为什么这里要再广播一次？
 	for id := range r.Prs {
 		if id == r.id {
 			continue

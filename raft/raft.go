@@ -186,6 +186,7 @@ func newRaft(c *Config) *Raft {
 		id:               c.ID,
 		Term:             0,
 		Prs:              prs,
+		RaftLog:          newLog(c.Storage),
 		votes:            votes,
 		State:            StateFollower,
 		heartbeatTimeout: c.HeartbeatTick,
@@ -206,6 +207,46 @@ func (r *Raft) resetRandomizedElectionTimeout() {
 	r.randomizedElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 }
 
+// []pb.Entry转[]*pb.Entry函数
+func toEntryPtrs(ents []pb.Entry) []*pb.Entry {
+	res := make([]*pb.Entry, len(ents))
+	for i := range ents {
+		res[i] = &ents[i]
+	}
+	return res
+}
+
+// []*pb.Entry转[]pb.Entry函数
+func toEntrys(ptrs []*pb.Entry) []pb.Entry {
+	res := make([]pb.Entry, len(ptrs))
+	for i, p := range ptrs {
+		res[i] = pb.Entry{
+			Term:      p.Term,
+			Index:     p.Index,
+			Data:      p.Data,
+			EntryType: p.EntryType,
+		}
+	}
+	return res
+}
+
+// 给定一个AppendResp的match index，检测该index是否已经超过半数
+func (r *Raft) checkCommit(index uint64) bool {
+	if r.State != StateLeader {
+		panic("only leader need to check commit")
+	}
+	committed_count := 1
+	for _, knownPeerIndex := range r.Prs {
+		if index <= knownPeerIndex.Match {
+			committed_count++
+		}
+		if committed_count > len(r.Prs)/2 {
+			return true
+		}
+	}
+	return false
+}
+
 /* ==================  工具函数部分 END ================== */
 
 /* ==================  send函数部分 START ================== */
@@ -221,10 +262,39 @@ func (r *Raft) sendMsg(m pb.Message) error {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	// r.sendMsg(pb.Message{
-	// 	MsgType: pb.MessageType_MsgAppend,
-	// })
-	return false
+	prs := r.Prs[to]
+	nextIndex := prs.Next
+	prevIndex := nextIndex - 1
+
+	prevTerm, err := r.RaftLog.Term(prevIndex)
+	if err != nil {
+		return false
+	}
+
+	ents, err := r.RaftLog.EntriesFrom(nextIndex)
+	if err != nil {
+		return false
+	}
+	// 添加空操作日志
+	if len(ents) == 0 {
+		ents = []pb.Entry{{
+			Term:  r.Term,
+			Index: nextIndex,
+			Data:  nil,
+		}}
+	}
+
+	r.sendMsg(pb.Message{
+		MsgType: pb.MessageType_MsgAppend,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		Index:   prevIndex,
+		LogTerm: prevTerm,
+		Entries: toEntryPtrs(ents),
+		Commit:  r.RaftLog.committed,
+	})
+	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -254,6 +324,15 @@ func (r *Raft) sendRequestVoteResp(to uint64, reject bool) {
 		To:      to,
 		Term:    r.Term,
 		Reject:  reject,
+	})
+}
+
+func (r *Raft) sendPropose(to uint64, ents []*pb.Entry) {
+	r.sendMsg(pb.Message{
+		MsgType: pb.MessageType_MsgPropose,
+		From:    r.id,
+		To:      to,
+		Entries: ents,
 	})
 }
 
@@ -309,6 +388,14 @@ func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
 	r.Lead = r.id
+	// 发起一个空Propose操作，用于对齐committed
+	noop_ent := []*pb.Entry{{Data: nil}}
+	r.Step(pb.Message{
+		MsgType: pb.MessageType_MsgPropose,
+		From:    r.id,
+		To:      r.id,
+		Entries: noop_ent,
+	})
 }
 
 // 检验票数是否过半，过半则变为Leader
@@ -426,7 +513,42 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		} else if r.Term == m.Term {
 			panic("[fatal logic error] multiple leaders in a term !!!")
 		}
+	case pb.MessageType_MsgAppendResponse:
+		id := m.From
+		if !m.Reject {
+			r.Prs[id].Match = m.Index
+			r.Prs[id].Next = m.Index + 1
+			// TODO 某个Index半数以上回应，更新Committed
+			if r.checkCommit(m.Index) {
+				r.RaftLog.committed = m.Index
+			}
+		} else {
+			// TODO 解决拒绝情况的Progress维护，此时RESP中Index的含义是？
+			r.Prs[id].Next = max(1, m.Index)
+			r.sendAppend(id)
+		}
+
+	case pb.MessageType_MsgPropose:
+		startIndex := r.RaftLog.LastIndex() + 1
+		// 将message的日志追加入Raftlog
+		for offset, ent := range m.Entries {
+			r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
+				Term:  r.Term,
+				Index: startIndex + uint64(offset),
+				Data:  ent.Data,
+			})
+		}
+		// 广播新日志
+		for id := range r.Prs {
+			if id == r.id {
+				continue
+			}
+			if is_send := r.sendAppend(id); !is_send {
+				panic("failed when sending append message")
+			}
+		}
 	}
+
 	return nil
 }
 

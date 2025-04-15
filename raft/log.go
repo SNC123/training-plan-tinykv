@@ -26,6 +26,7 @@ import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 // that not truncated
 type RaftLog struct {
 	// storage contains all stable entries since the last snapshot.
+	// 即 持久化的非压缩日志存储于此
 	storage Storage
 
 	// committed is the highest log position that is known to be in
@@ -43,6 +44,7 @@ type RaftLog struct {
 	stabled uint64
 
 	// all entries that have not yet compact.
+	// 未压缩日志的缓存，Client的Proposal首先加入此处
 	entries []pb.Entry
 
 	// the incoming unstable snapshot, if any.
@@ -56,8 +58,34 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
+	firstIndex, err := storage.FirstIndex()
+	if err != nil {
+		panic(err)
+	}
 
-	return nil
+	lastIndex, err := storage.LastIndex()
+	if err != nil {
+		panic(err)
+	}
+
+	ents, err := storage.Entries(firstIndex, lastIndex+1)
+	if err != nil {
+		panic(err)
+	}
+
+	dummyIndex := firstIndex - 1
+	dummyTerm, err := storage.Term(dummyIndex)
+	if err != nil {
+		panic(err)
+	}
+
+	return &RaftLog{
+		storage:   storage,
+		entries:   append([]pb.Entry{{Index: dummyIndex, Term: dummyTerm}}, ents...), // 用于统一prevTerm边界问题
+		committed: firstIndex - 1,
+		applied:   firstIndex - 1,
+		stabled:   lastIndex,
+	}
 }
 
 // We need to compact the log entries in some point of time like
@@ -111,7 +139,11 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	// TODO 是否需要判断条件？
+	// Raftlog的日志缓存（entries）有数据
+	if len(l.entries) > 0 {
+		return l.entries[len(l.entries)-1].Index
+	}
+	// Raftlog日志缓存无数据
 	lastIndex, _ := l.storage.LastIndex()
 	return lastIndex
 }
@@ -120,7 +152,7 @@ func (l *RaftLog) LastIndex() uint64 {
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	dummyIndex := l.entries[0].Index
-	if i <= dummyIndex {
+	if i < dummyIndex {
 		return 0, ErrCompacted
 	}
 	offset := i - dummyIndex
@@ -128,4 +160,24 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return 0, ErrUnavailable
 	}
 	return l.entries[offset].Term, nil
+}
+
+func (l *RaftLog) EntriesFrom(from uint64) ([]pb.Entry, error) {
+	if len(l.entries) == 0 {
+		return nil, nil
+	}
+
+	dummyIndex := l.entries[0].Index
+	lastIndex := l.LastIndex()
+
+	if from > lastIndex {
+		return nil, nil // 没有日志可返回
+	}
+
+	if from <= dummyIndex {
+		return nil, ErrCompacted // 被 snapshot 截断了
+	}
+
+	offset := int(from - dummyIndex)
+	return l.entries[offset:], nil
 }
