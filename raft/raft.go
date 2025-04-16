@@ -333,11 +333,18 @@ func (r *Raft) sendHeartbeat(to uint64) {
 }
 
 func (r *Raft) sendRequestVote(to uint64) {
+	lastIndex := r.RaftLog.LastIndex()
+	lastTerm, err := r.RaftLog.Term(lastIndex)
+	if err != nil {
+		panic("failed to send request vote")
+	}
 	r.sendMsg(pb.Message{
 		MsgType: pb.MessageType_MsgRequestVote,
 		From:    r.id,
 		To:      to,
 		Term:    r.Term,
+		Index:   lastIndex,
+		LogTerm: lastTerm,
 	})
 }
 
@@ -475,9 +482,18 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		// 避免特殊情况：集群中只有一个节点
 		r.maybeBecomeLeader()
 	case pb.MessageType_MsgRequestVote:
-		if r.Vote == 0 || r.Vote == m.From {
-			r.sendRequestVoteResp(m.From, false)
-			r.Vote = m.From
+		lastIndex := r.RaftLog.LastIndex()
+		lastTerm, err := r.RaftLog.Term(lastIndex)
+		if err != nil {
+			panic("failed to get last entry's term")
+		}
+		if m.LogTerm > lastTerm || (m.LogTerm == lastTerm && m.Index >= lastIndex) {
+			if r.Vote == 0 || r.Vote == m.From {
+				r.sendRequestVoteResp(m.From, false)
+				r.Vote = m.From
+			} else {
+				r.sendRequestVoteResp(m.From, true)
+			}
 		} else {
 			r.sendRequestVoteResp(m.From, true)
 		}
@@ -583,7 +599,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		if r.Term < m.Term {
 			r.becomeFollower(m.Term, m.From)
 		} else if r.Term == m.Term {
-			panic("[fatal logic error] multiple leaders in a term !!!")
+			panic("[Fatal Logic Error] multiple leaders in a term !!!")
 		}
 	case pb.MessageType_MsgAppendResponse:
 		id := m.From
@@ -591,7 +607,13 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			r.Prs[id].Match = m.Index
 			r.Prs[id].Next = m.Index + 1
 			// 某个Index半数以上回应，更新Committed
-			r.maybeUpdateCommit(m.Index)
+			matchTerm, err := r.RaftLog.Term(m.Index)
+			if err != nil {
+				panic("[Leader@AppendResponse] Failed to get match entry's term ")
+			}
+			if matchTerm == r.Term {
+				r.maybeUpdateCommit(m.Index)
+			}
 		} else {
 			// TODO 解决拒绝情况的Progress维护，此时RESP中Index的含义是？
 			r.Prs[id].Next = max(1, m.Index)
