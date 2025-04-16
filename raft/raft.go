@@ -176,15 +176,22 @@ func newRaft(c *Config) *Raft {
 	votes := make(map[uint64]bool)
 
 	for _, id := range c.peers {
+		lastIndex, err := c.Storage.LastIndex()
+		if err != nil {
+			panic("[newRaft] fail to get persisted last entry")
+		}
 		prs[id] = &Progress{
-			Match: 0,
-			Next:  1,
+			Match: lastIndex,
+			Next:  lastIndex + 1,
 		}
 		votes[id] = false
 	}
+	hardState, _, _ := c.Storage.InitialState()
+
 	new_raft := &Raft{
 		id:               c.ID,
-		Term:             0,
+		Term:             hardState.Term,
+		Vote:             hardState.Vote,
 		Prs:              prs,
 		RaftLog:          newLog(c.Storage),
 		votes:            votes,
@@ -236,7 +243,7 @@ func (r *Raft) maybeUpdateCommit(index uint64) (is_updated bool) {
 	if r.State != StateLeader {
 		panic("only leader need to check commit")
 	}
-	committed_count := 1
+	committed_count := 0
 	for _, knownPeerIndex := range r.Prs {
 		if index <= knownPeerIndex.Match {
 			committed_count++
@@ -443,6 +450,20 @@ func (r *Raft) maybeBecomeLeader() {
 	}
 }
 
+// 检验是否收到到所有回复，仍未过半则变为Follower
+func (r *Raft) maybeBecomeFollower() {
+	// TODO 优化速度?
+	var agree_count = 0
+	for _, agree := range r.votes {
+		if agree {
+			agree_count++
+		}
+	}
+	if len(r.votes) == len(r.Prs) && agree_count <= len(r.Prs)/2 {
+		r.becomeFollower(r.Term, 0)
+	}
+}
+
 /* ==================  become函数部分 END ================== */
 
 /* ==================  step函数部分 START ================== */
@@ -481,12 +502,19 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		}
 		// 避免特殊情况：集群中只有一个节点
 		r.maybeBecomeLeader()
+		r.maybeBecomeFollower()
 	case pb.MessageType_MsgRequestVote:
 		lastIndex := r.RaftLog.LastIndex()
 		lastTerm, err := r.RaftLog.Term(lastIndex)
 		if err != nil {
 			panic("failed to get last entry's term")
 		}
+		/* ======== CONDITION BREAKPOINT ======== */
+		cb_from := m.From
+		cb_to := m.To
+		_ = cb_from + cb_to
+
+		/* ======== CONDITION BREAKPOINT ======== */
 		if m.LogTerm > lastTerm || (m.LogTerm == lastTerm && m.Index >= lastIndex) {
 			if r.Vote == 0 || r.Vote == m.From {
 				r.sendRequestVoteResp(m.From, false)
@@ -565,6 +593,7 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		}
 		// 避免特殊情况：集群中只有一个节点
 		r.maybeBecomeLeader()
+		r.maybeBecomeFollower()
 	case pb.MessageType_MsgRequestVote:
 		if m.Term > r.Term {
 			r.sendRequestVoteResp(m.From, false)
@@ -575,8 +604,11 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 	case pb.MessageType_MsgRequestVoteResponse:
 		if !m.Reject {
 			r.votes[m.From] = true
+		} else {
+			r.votes[m.From] = false
 		}
 		r.maybeBecomeLeader()
+		r.maybeBecomeFollower()
 	case pb.MessageType_MsgAppend:
 		if r.Term <= m.Term {
 			r.becomeFollower(m.Term, m.From)
@@ -611,7 +643,8 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			if err != nil {
 				panic("[Leader@AppendResponse] Failed to get match entry's term ")
 			}
-			if matchTerm == r.Term {
+			// 只有当前term日志项才可作为commitIndex
+			if matchTerm == m.Term {
 				r.maybeUpdateCommit(m.Index)
 			}
 		} else {
@@ -622,6 +655,8 @@ func (r *Raft) stepLeader(m pb.Message) error {
 
 	case pb.MessageType_MsgPropose:
 		startIndex := r.RaftLog.LastIndex() + 1
+		r.Prs[r.id].Match += uint64(len(m.Entries))
+		r.Prs[r.id].Next += uint64(len(m.Entries))
 		// 将message的日志追加入Raftlog
 		for offset, ent := range m.Entries {
 			r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
