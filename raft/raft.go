@@ -230,8 +230,9 @@ func toEntrys(ptrs []*pb.Entry) []pb.Entry {
 	return res
 }
 
-// 给定一个AppendResp的match index，检测该index是否已经超过半数
-func (r *Raft) checkCommit(index uint64) bool {
+// 给定一个AppendResp的match index，检测该index是否已经超过半数,过半则更新
+// 返回值：是否有更新
+func (r *Raft) maybeUpdateCommit(index uint64) (is_updated bool) {
 	if r.State != StateLeader {
 		panic("only leader need to check commit")
 	}
@@ -241,10 +242,22 @@ func (r *Raft) checkCommit(index uint64) bool {
 			committed_count++
 		}
 		if committed_count > len(r.Prs)/2 {
+			r.RaftLog.committed = max(r.RaftLog.committed, index)
 			return true
 		}
 	}
 	return false
+}
+
+// 一致性检查，找不到则返回(0,false)
+func (r *Raft) findMatchedLogIndex(prevIndex uint64, prevTerm uint64) (bool, uint64) {
+	for i := len(r.RaftLog.entries) - 1; i >= 0; i-- {
+		ent := r.RaftLog.entries[i]
+		if ent.Index == prevIndex && ent.Term == prevTerm {
+			return true, ent.Index
+		}
+	}
+	return false, 0
 }
 
 /* ==================  工具函数部分 END ================== */
@@ -295,6 +308,17 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Commit:  r.RaftLog.committed,
 	})
 	return true
+}
+
+func (r *Raft) sendAppendResp(to uint64, reject bool, matchIndex uint64) {
+	r.sendMsg(pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		Reject:  reject,
+		Index:   matchIndex,
+	})
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -388,7 +412,7 @@ func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
 	r.Lead = r.id
-	// 发起一个空Propose操作，用于对齐committed
+	// 执行一个空Propose操作，用于对齐committed
 	noop_ent := []*pb.Entry{{Data: nil}}
 	r.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
@@ -459,7 +483,55 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		}
 	case pb.MessageType_MsgAppend:
 		r.Term = max(r.Term, m.Term)
+		if m.Commit > r.RaftLog.committed {
+			r.RaftLog.committed = m.Commit
+		}
+
+		// 一致性检查,确保(prevIndex,prevTerm)存在
+		is_matched, matchIndex := r.findMatchedLogIndex(m.Index, m.LogTerm)
+		if !is_matched {
+			r.sendAppendResp(m.From, true, 0)
+		} else {
+			r.sendAppendResp(m.From, false, matchIndex)
+			// 从(prevIndex,prevTerm)后第一条开始，匹配原日志和Message日志，若某个不一样则删除后续所有
+			startIndex := matchIndex + 1
+			// 找到matchIndex的offset
+			startOffset := 0
+			for i, ent := range r.RaftLog.entries {
+				if ent.Index == matchIndex {
+					startOffset = 1 + i
+					break
+				}
+			}
+			// 找到冲突位置的offset
+			conflictOffset := -1
+			for i, ent := range m.Entries {
+				targetIndex := startIndex + uint64(i)
+				if startOffset+i >= len(r.RaftLog.entries) {
+					break
+				}
+				targetEntry := r.RaftLog.entries[startOffset+i]
+				if targetEntry.Index != targetIndex || targetEntry.Term != ent.Term {
+					conflictOffset = startOffset + i
+					break
+				}
+			}
+			// 发现冲突：删除冲突及后续，再追加新的
+			// 未发现冲突：追加message中多出的日志
+			if conflictOffset != -1 {
+				r.RaftLog.stabled = r.RaftLog.entries[0].Index + uint64(conflictOffset) - 1
+				r.RaftLog.entries = r.RaftLog.entries[:conflictOffset]
+				for i := conflictOffset - startOffset; i < len(m.Entries); i++ {
+					r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
+				}
+			} else if startOffset+len(m.Entries) > len(r.RaftLog.entries) {
+				for i := len(r.RaftLog.entries) - startOffset; i < len(m.Entries); i++ {
+					r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
+				}
+			}
+		}
 		// TODO 考虑是否需要维护lead信息
+
 	}
 	return nil
 }
@@ -518,10 +590,8 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		if !m.Reject {
 			r.Prs[id].Match = m.Index
 			r.Prs[id].Next = m.Index + 1
-			// TODO 某个Index半数以上回应，更新Committed
-			if r.checkCommit(m.Index) {
-				r.RaftLog.committed = m.Index
-			}
+			// 某个Index半数以上回应，更新Committed
+			r.maybeUpdateCommit(m.Index)
 		} else {
 			// TODO 解决拒绝情况的Progress维护，此时RESP中Index的含义是？
 			r.Prs[id].Next = max(1, m.Index)
@@ -547,6 +617,8 @@ func (r *Raft) stepLeader(m pb.Message) error {
 				panic("failed when sending append message")
 			}
 		}
+		// 避免特殊情况：集群中只有一个节点
+		r.maybeUpdateCommit(r.RaftLog.LastIndex())
 	}
 
 	return nil

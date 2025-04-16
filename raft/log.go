@@ -110,13 +110,13 @@ func (l *RaftLog) allEntries() []pb.Entry {
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
 	if len(l.entries) <= 1 {
-		return nil
+		return []pb.Entry{}
 	}
 
 	dummyIndex := l.entries[0].Index // 对应storage.entries[1]的log index
 	unstabled_offset := l.stabled + 1 - dummyIndex
 	if unstabled_offset < 1 || int(unstabled_offset) >= len(l.entries) {
-		return nil
+		return []pb.Entry{}
 	}
 	return l.entries[unstabled_offset:]
 }
@@ -130,7 +130,7 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	dummyIndex := l.entries[0].Index
 	unapplied_offset := l.applied + 1 - dummyIndex
 	uncommitted_offset := l.committed + 1 - dummyIndex
-	if unapplied_offset < 1 || int(uncommitted_offset) >= len(l.entries) || unapplied_offset >= uncommitted_offset {
+	if unapplied_offset < 1 || int(uncommitted_offset) > len(l.entries) || unapplied_offset >= uncommitted_offset {
 		return nil
 	}
 	return l.entries[unapplied_offset:uncommitted_offset]
