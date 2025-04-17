@@ -239,7 +239,7 @@ func toEntrys(ptrs []*pb.Entry) []pb.Entry {
 
 // 给定一个AppendResp的match index，检测该index是否已经超过半数,过半则更新
 // 返回值：是否有更新
-func (r *Raft) maybeUpdateCommit(index uint64) (is_updated bool) {
+func (r *Raft) maybeUpdateCommit(index uint64) {
 	if r.State != StateLeader {
 		panic("only leader need to check commit")
 	}
@@ -249,11 +249,19 @@ func (r *Raft) maybeUpdateCommit(index uint64) (is_updated bool) {
 			committed_count++
 		}
 		if committed_count > len(r.Prs)/2 {
-			r.RaftLog.committed = max(r.RaftLog.committed, index)
-			return true
+			if index > r.RaftLog.committed {
+				r.RaftLog.committed = index
+				// 按照hint4 要求，commit更新后立刻广播
+				for id := range r.Prs {
+					if id == r.id {
+						continue
+					}
+					r.sendAppend(id)
+				}
+				return
+			}
 		}
 	}
-	return false
 }
 
 // 一致性检查，找不到则返回(0,false)
@@ -295,14 +303,14 @@ func (r *Raft) sendAppend(to uint64) bool {
 	if err != nil {
 		return false
 	}
-	// 添加空操作日志
-	if len(ents) == 0 {
-		ents = []pb.Entry{{
-			Term:  r.Term,
-			Index: nextIndex,
-			Data:  nil,
-		}}
-	}
+	// // 添加空操作日志
+	// if len(ents) == 0 {
+	// 	ents = []pb.Entry{{
+	// 		Term:  r.Term,
+	// 		Index: nextIndex,
+	// 		Data:  nil,
+	// 	}}
+	// }
 
 	r.sendMsg(pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
@@ -333,6 +341,16 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
 	r.sendMsg(pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeat,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+	})
+}
+
+func (r *Raft) sendHeartbeatResp(to uint64, reject bool) {
+	// Your Code Here (2A).
+	r.sendMsg(pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeatResponse,
 		From:    r.id,
 		To:      to,
 		Term:    r.Term,
@@ -490,6 +508,12 @@ func (r *Raft) Step(m pb.Message) error {
 
 func (r *Raft) stepFollower(m pb.Message) error {
 	switch m.MsgType {
+	case pb.MessageType_MsgHeartbeat:
+		if m.Term >= r.Term {
+			r.sendHeartbeatResp(m.From, false)
+		} else {
+			r.sendHeartbeatResp(m.From, true)
+		}
 	case pb.MessageType_MsgHup:
 		r.becomeCandidate()
 		// 广播Message RequestVote
@@ -513,7 +537,6 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		cb_from := m.From
 		cb_to := m.To
 		_ = cb_from + cb_to
-
 		/* ======== CONDITION BREAKPOINT ======== */
 		if m.LogTerm > lastTerm || (m.LogTerm == lastTerm && m.Index >= lastIndex) {
 			if r.Vote == 0 || r.Vote == m.From {
@@ -526,56 +549,7 @@ func (r *Raft) stepFollower(m pb.Message) error {
 			r.sendRequestVoteResp(m.From, true)
 		}
 	case pb.MessageType_MsgAppend:
-		r.Term = max(r.Term, m.Term)
-		if m.Commit > r.RaftLog.committed {
-			r.RaftLog.committed = m.Commit
-		}
-
-		// 一致性检查,确保(prevIndex,prevTerm)存在
-		is_matched, matchIndex := r.findMatchedLogIndex(m.Index, m.LogTerm)
-		if !is_matched {
-			r.sendAppendResp(m.From, true, 0)
-		} else {
-			r.sendAppendResp(m.From, false, matchIndex)
-			// 从(prevIndex,prevTerm)后第一条开始，匹配原日志和Message日志，若某个不一样则删除后续所有
-			startIndex := matchIndex + 1
-			// 找到matchIndex的offset
-			startOffset := 0
-			for i, ent := range r.RaftLog.entries {
-				if ent.Index == matchIndex {
-					startOffset = 1 + i
-					break
-				}
-			}
-			// 找到冲突位置的offset
-			conflictOffset := -1
-			for i, ent := range m.Entries {
-				targetIndex := startIndex + uint64(i)
-				if startOffset+i >= len(r.RaftLog.entries) {
-					break
-				}
-				targetEntry := r.RaftLog.entries[startOffset+i]
-				if targetEntry.Index != targetIndex || targetEntry.Term != ent.Term {
-					conflictOffset = startOffset + i
-					break
-				}
-			}
-			// 发现冲突：删除冲突及后续，再追加新的
-			// 未发现冲突：追加message中多出的日志
-			if conflictOffset != -1 {
-				r.RaftLog.stabled = r.RaftLog.entries[0].Index + uint64(conflictOffset) - 1
-				r.RaftLog.entries = r.RaftLog.entries[:conflictOffset]
-				for i := conflictOffset - startOffset; i < len(m.Entries); i++ {
-					r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
-				}
-			} else if startOffset+len(m.Entries) > len(r.RaftLog.entries) {
-				for i := len(r.RaftLog.entries) - startOffset; i < len(m.Entries); i++ {
-					r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
-				}
-			}
-		}
-		// TODO 考虑是否需要维护lead信息
-
+		r.handleAppendEntries(m)
 	}
 	return nil
 }
@@ -626,7 +600,16 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			}
 			r.sendHeartbeat(id)
 		}
-
+	case pb.MessageType_MsgHeartbeatResponse:
+		if !m.Reject {
+			// 如果Follower缺少日志，应该补全
+			if r.Prs[m.From].Match <= r.RaftLog.committed {
+				r.sendAppend(m.From)
+			}
+		} else {
+			// 这个部分不应该触发,在Step主入口处理
+			panic("[Leader@HeartbeatResponse] HeartbeatResponse reject = true should not be handled here")
+		}
 	case pb.MessageType_MsgAppend:
 		if r.Term < m.Term {
 			r.becomeFollower(m.Term, m.From)
@@ -655,8 +638,8 @@ func (r *Raft) stepLeader(m pb.Message) error {
 
 	case pb.MessageType_MsgPropose:
 		startIndex := r.RaftLog.LastIndex() + 1
-		r.Prs[r.id].Match += uint64(len(m.Entries))
-		r.Prs[r.id].Next += uint64(len(m.Entries))
+		r.Prs[r.id].Match = r.RaftLog.LastIndex() + uint64(len(m.Entries))
+		r.Prs[r.id].Next = r.Prs[r.id].Match + 1
 		// 将message的日志追加入Raftlog
 		for offset, ent := range m.Entries {
 			r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
@@ -686,6 +669,57 @@ func (r *Raft) stepLeader(m pb.Message) error {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	switch r.State {
+	case StateFollower:
+		r.Term = max(r.Term, m.Term)
+		// 一致性检查,确保(prevIndex,prevTerm)存在
+		is_matched, matchIndex := r.findMatchedLogIndex(m.Index, m.LogTerm)
+		if !is_matched {
+			r.sendAppendResp(m.From, true, 0)
+		} else {
+			// 从(prevIndex,prevTerm)后第一条开始，匹配原日志和Message日志，若某个不一样则删除后续所有
+			startIndex := matchIndex + 1
+			// 找到matchIndex的offset
+			startOffset := 0
+			for i, ent := range r.RaftLog.entries {
+				if ent.Index == matchIndex {
+					startOffset = 1 + i
+					break
+				}
+			}
+			// 找到冲突位置的offset
+			conflictOffset := -1
+			for i, ent := range m.Entries {
+				targetIndex := startIndex + uint64(i)
+				if startOffset+i >= len(r.RaftLog.entries) {
+					break
+				}
+				targetEntry := r.RaftLog.entries[startOffset+i]
+				if targetEntry.Index != targetIndex || targetEntry.Term != ent.Term {
+					conflictOffset = startOffset + i
+					break
+				}
+			}
+			// 发现冲突：删除冲突及后续，再追加新的
+			// 未发现冲突：追加message中多出的日志
+			if conflictOffset != -1 {
+				r.RaftLog.stabled = r.RaftLog.entries[0].Index + uint64(conflictOffset) - 1
+				r.RaftLog.entries = r.RaftLog.entries[:conflictOffset]
+				for i := conflictOffset - startOffset; i < len(m.Entries); i++ {
+					r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
+				}
+			} else if startOffset+len(m.Entries) > len(r.RaftLog.entries) {
+				for i := len(r.RaftLog.entries) - startOffset; i < len(m.Entries); i++ {
+					r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
+				}
+			}
+			if m.Commit > r.RaftLog.committed {
+				r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+			}
+			r.sendAppendResp(m.From, false, r.RaftLog.LastIndex())
+		}
+		// TODO 考虑是否需要维护lead信息
+	}
 }
 
 // handleHeartbeat handle Heartbeat RPC request
