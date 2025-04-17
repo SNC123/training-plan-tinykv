@@ -37,6 +37,7 @@ type SoftState struct {
 // Ready encapsulates the entries and messages that are ready to read,
 // be saved to stable storage, committed or sent to other peers.
 // All fields in Ready are read-only.
+// Ready表示：自上次Advance以来，Rawnode结点的改变量
 type Ready struct {
 	// The current volatile state of a Node.
 	// SoftState will be nil if there is no update.
@@ -69,7 +70,8 @@ type Ready struct {
 
 // RawNode is a wrapper of Raft.
 type RawNode struct {
-	Raft          *Raft
+	Raft *Raft
+	// 记录上次Advance后的状态
 	prevSoftState *SoftState
 	prevHardState pb.HardState
 }
@@ -162,10 +164,12 @@ func (rn *RawNode) Ready() Ready {
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         rn.Raft.msgs,
+		SoftState:        nil,
+		HardState:        pb.HardState{},
 	}
 
 	// SoftState 仅在变化时返回
-	if rn.prevSoftState == nil || !reflect.DeepEqual(rn.prevSoftState, ss) {
+	if !reflect.DeepEqual(rn.prevSoftState, ss) {
 		rd.SoftState = ss
 	}
 
@@ -178,14 +182,15 @@ func (rn *RawNode) Ready() Ready {
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
+// 自上次Advance以来，状态是否有变化
 func (rn *RawNode) HasReady() bool {
 	ss := &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State}
-	if rn.prevSoftState != nil && !reflect.DeepEqual(rn.prevSoftState, ss) {
+	if !reflect.DeepEqual(rn.prevSoftState, ss) {
 		return true
 	}
 	hs := pb.HardState{Term: rn.Raft.Term, Vote: rn.Raft.Vote, Commit: rn.Raft.RaftLog.committed}
-	empty_hs := pb.HardState{}
-	if !reflect.DeepEqual(rn.prevHardState, empty_hs) && !reflect.DeepEqual(rn.prevHardState, hs) {
+	// empty_hs := pb.HardState{}
+	if !reflect.DeepEqual(rn.prevHardState, hs) {
 		return true
 	}
 	if len(rn.Raft.RaftLog.unstableEntries()) > 0 {
@@ -202,6 +207,7 @@ func (rn *RawNode) HasReady() bool {
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
+// Ready的改变量内容已由外界完成（如apply和persist），更新状态
 func (rn *RawNode) Advance(rd Ready) {
 	if len(rd.Entries) > 0 {
 		last := rd.Entries[len(rd.Entries)-1]
@@ -212,8 +218,8 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.Raft.RaftLog.applied = last.Index
 	}
 	rn.Raft.msgs = nil
-	rn.prevSoftState = rd.SoftState
-	rn.prevHardState = rd.HardState
+	rn.prevSoftState = &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State}
+	rn.prevHardState = pb.HardState{Term: rn.Raft.Term, Vote: rn.Raft.Vote, Commit: rn.Raft.RaftLog.committed}
 }
 
 // GetProgress return the Progress of this node and its peers, if this
