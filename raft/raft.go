@@ -659,6 +659,10 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		}
 		// 避免特殊情况：集群中只有一个节点
 		r.maybeUpdateCommit(r.RaftLog.LastIndex())
+	case pb.MessageType_MsgRequestVote:
+		if m.Term == r.Term {
+			r.sendRequestVoteResp(m.From, true)
+		}
 	}
 
 	return nil
@@ -672,6 +676,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	switch r.State {
 	case StateFollower:
 		r.Term = max(r.Term, m.Term)
+		r.Lead = m.From
 		// 一致性检查,确保(prevIndex,prevTerm)存在
 		is_matched, matchIndex := r.findMatchedLogIndex(m.Index, m.LogTerm)
 		if !is_matched {
@@ -714,7 +719,11 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				}
 			}
 			if m.Commit > r.RaftLog.committed {
-				r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+				if m.Entries != nil {
+					r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+				} else {
+					r.RaftLog.committed = min(m.Commit, m.Index)
+				}
 			}
 			r.sendAppendResp(m.From, false, r.RaftLog.LastIndex())
 		}
