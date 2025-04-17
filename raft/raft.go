@@ -171,7 +171,6 @@ func newRaft(c *Config) *Raft {
 	if err := c.validate(); err != nil {
 		panic(err.Error())
 	}
-	// Your Code Here (2A).
 	prs := make(map[uint64]*Progress)
 	votes := make(map[uint64]bool)
 
@@ -289,7 +288,6 @@ func (r *Raft) sendMsg(m pb.Message) error {
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
-	// Your Code Here (2A).
 	prs := r.Prs[to]
 	nextIndex := prs.Next
 	prevIndex := nextIndex - 1
@@ -338,7 +336,6 @@ func (r *Raft) sendAppendResp(to uint64, reject bool, matchIndex uint64) {
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
-	// Your Code Here (2A).
 	r.sendMsg(pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeat,
 		From:    r.id,
@@ -348,7 +345,6 @@ func (r *Raft) sendHeartbeat(to uint64) {
 }
 
 func (r *Raft) sendHeartbeatResp(to uint64, reject bool) {
-	// Your Code Here (2A).
 	r.sendMsg(pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeatResponse,
 		From:    r.id,
@@ -396,7 +392,6 @@ func (r *Raft) sendPropose(to uint64, ents []*pb.Entry) {
 
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
-	// Your Code Here (2A).	switch r.State {
 	switch r.State {
 	case StateFollower, StateCandidate:
 		r.electionElapsed++
@@ -420,7 +415,6 @@ func (r *Raft) tick() {
 // becomeFollower transform this peer's state to Follower
 // 即该raft结点知道leader存在，转变为follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
-	// Your Code Here (2A).
 	r.State = StateFollower
 	r.Lead = lead
 	r.Term = term
@@ -431,7 +425,6 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 // becomeCandidate transform this peer's state to candidate
 // 发觉leader故障，进行新一轮选举
 func (r *Raft) becomeCandidate() {
-	// Your Code Here (2A).
 	r.State = StateCandidate
 	r.Term++                        // 仅在发起新选举时增加term
 	r.votes = make(map[uint64]bool) // 注意清空votes
@@ -440,7 +433,6 @@ func (r *Raft) becomeCandidate() {
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
-	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
 	r.Lead = r.id
@@ -490,7 +482,6 @@ func (r *Raft) maybeBecomeFollower() {
 // on `eraftpb.proto` for what msgs should be handled
 // 即 当前raft结点收到新信息Message后该如何处理
 func (r *Raft) Step(m pb.Message) error {
-	// Your Code Here (2A).
 	// 收到更大term的消息，应该强制更新
 	if r.Term < m.Term {
 		r.becomeFollower(m.Term, 0) // 此时并不知道谁是leader
@@ -672,7 +663,6 @@ func (r *Raft) stepLeader(m pb.Message) error {
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
-	// Your Code Here (2A).
 	switch r.State {
 	case StateFollower:
 		r.Term = max(r.Term, m.Term)
@@ -729,11 +719,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		}
 		// TODO 考虑是否需要维护lead信息
 	}
-}
-
-// handleHeartbeat handle Heartbeat RPC request
-func (r *Raft) handleHeartbeat(m pb.Message) {
-	// Your Code Here (2A).
 }
 
 // handleSnapshot handle Snapshot RPC request

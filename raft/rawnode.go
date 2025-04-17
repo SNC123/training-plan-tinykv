@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"reflect"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -68,14 +69,19 @@ type Ready struct {
 
 // RawNode is a wrapper of Raft.
 type RawNode struct {
-	Raft *Raft
-	// Your Data Here (2A).
+	Raft          *Raft
+	prevSoftState *SoftState
+	prevHardState pb.HardState
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
-	// Your Code Here (2A).
-	return nil, nil
+	r := newRaft(config)
+	return &RawNode{
+		Raft:          r,
+		prevSoftState: &SoftState{Lead: r.Lead, RaftState: r.State},
+		prevHardState: pb.HardState{Term: r.Term, Vote: r.Vote, Commit: r.RaftLog.committed},
+	}, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -142,20 +148,72 @@ func (rn *RawNode) Step(m pb.Message) error {
 
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
-	// Your Code Here (2A).
-	return Ready{}
+	ss := &SoftState{
+		Lead:      rn.Raft.Lead,
+		RaftState: rn.Raft.State,
+	}
+	hs := pb.HardState{
+		Term:   rn.Raft.Term,
+		Vote:   rn.Raft.Vote,
+		Commit: rn.Raft.RaftLog.committed,
+	}
+
+	rd := Ready{
+		Entries:          rn.Raft.RaftLog.unstableEntries(),
+		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
+		Messages:         rn.Raft.msgs,
+	}
+
+	// SoftState 仅在变化时返回
+	if rn.prevSoftState == nil || !reflect.DeepEqual(rn.prevSoftState, ss) {
+		rd.SoftState = ss
+	}
+
+	// HardState 若无变化，则返回空值
+	if !reflect.DeepEqual(rn.prevHardState, hs) {
+		rd.HardState = hs
+	}
+
+	return rd
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
-	// Your Code Here (2A).
+	ss := &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State}
+	if rn.prevSoftState != nil && !reflect.DeepEqual(rn.prevSoftState, ss) {
+		return true
+	}
+	hs := pb.HardState{Term: rn.Raft.Term, Vote: rn.Raft.Vote, Commit: rn.Raft.RaftLog.committed}
+	empty_hs := pb.HardState{}
+	if !reflect.DeepEqual(rn.prevHardState, empty_hs) && !reflect.DeepEqual(rn.prevHardState, hs) {
+		return true
+	}
+	if len(rn.Raft.RaftLog.unstableEntries()) > 0 {
+		return true
+	}
+	if len(rn.Raft.RaftLog.nextEnts()) > 0 {
+		return true
+	}
+	if len(rn.Raft.msgs) > 0 {
+		return true
+	}
 	return false
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
-	// Your Code Here (2A).
+	if len(rd.Entries) > 0 {
+		last := rd.Entries[len(rd.Entries)-1]
+		rn.Raft.RaftLog.stabled = last.Index
+	}
+	if len(rd.CommittedEntries) > 0 {
+		last := rd.CommittedEntries[len(rd.CommittedEntries)-1]
+		rn.Raft.RaftLog.applied = last.Index
+	}
+	rn.Raft.msgs = nil
+	rn.prevSoftState = rd.SoftState
+	rn.prevHardState = rd.HardState
 }
 
 // GetProgress return the Progress of this node and its peers, if this

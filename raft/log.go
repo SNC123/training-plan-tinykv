@@ -57,7 +57,6 @@ type RaftLog struct {
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
-	// Your Code Here (2A).
 	firstIndex, err := storage.FirstIndex()
 	if err != nil {
 		panic(err)
@@ -78,11 +77,11 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		panic(err)
 	}
-
+	hardState, _, _ := storage.InitialState()
 	return &RaftLog{
 		storage:   storage,
 		entries:   append([]pb.Entry{{Index: dummyIndex, Term: dummyTerm}}, ents...), // 用于统一prevTerm边界问题
-		committed: firstIndex - 1,
+		committed: hardState.Commit,
 		applied:   firstIndex - 1,
 		stabled:   lastIndex,
 	}
@@ -99,7 +98,6 @@ func (l *RaftLog) maybeCompact() {
 // note, exclude any dummy entries from the return value.
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
-	// Your Code Here (2A).
 	if len(l.entries) <= 1 {
 		return nil
 	}
@@ -108,7 +106,6 @@ func (l *RaftLog) allEntries() []pb.Entry {
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
-	// Your Code Here (2A).
 	if len(l.entries) <= 1 {
 		return []pb.Entry{}
 	}
@@ -123,7 +120,6 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
-	// Your Code Here (2A).
 	if len(l.entries) <= 1 {
 		return nil
 	}
@@ -138,7 +134,6 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
-	// Your Code Here (2A).
 	// Raftlog的日志缓存（entries）有数据
 	if len(l.entries) > 0 {
 		return l.entries[len(l.entries)-1].Index
@@ -150,7 +145,6 @@ func (l *RaftLog) LastIndex() uint64 {
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
-	// Your Code Here (2A).
 	dummyIndex := l.entries[0].Index
 	if i < dummyIndex {
 		return 0, ErrCompacted
