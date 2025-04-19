@@ -548,8 +548,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 				r.maybeUpdateCommit(m.Index)
 			}
 		} else {
-			// TODO 解决拒绝情况的Progress维护，此时RESP中Index的含义是？
-			r.Prs[id].Next = max(1, m.Index+1)
+			// AppendResponse为Reject,应回退一位
+			// TODO 优化回退速度（例如按任期加速回退）
+			r.Prs[id].Next = max(1, r.Prs[id].Next-1)
 			r.sendAppend(id)
 		}
 	case pb.MessageType_MsgPropose:
@@ -644,7 +645,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		// 一致性检查,确保(prevIndex,prevTerm)存在
 		is_matched, matchIndex := r.findMatchedLogIndex(m.Index, m.LogTerm)
 		if !is_matched {
-			r.sendAppendResp(m.From, true, 0)
+			r.sendAppendResp(m.From, true, matchIndex)
 		} else {
 			// 从(prevIndex,prevTerm)后第一条开始，匹配原日志和Message日志，若某个不一样则删除后续所有
 			startIndex := matchIndex + 1
