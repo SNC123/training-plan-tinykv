@@ -177,7 +177,7 @@ func newRaft(c *Config) *Raft {
 	for _, id := range c.peers {
 		lastIndex, err := c.Storage.LastIndex()
 		if err != nil {
-			panic("[newRaft] fail to get persisted last entry")
+			panic("[newRaft] Failed to get persisted last entry's index ")
 		}
 		prs[id] = &Progress{
 			Match: lastIndex,
@@ -222,25 +222,11 @@ func toEntryPtrs(ents []pb.Entry) []*pb.Entry {
 	return res
 }
 
-// []*pb.Entry转[]pb.Entry函数
-func toEntrys(ptrs []*pb.Entry) []pb.Entry {
-	res := make([]pb.Entry, len(ptrs))
-	for i, p := range ptrs {
-		res[i] = pb.Entry{
-			Term:      p.Term,
-			Index:     p.Index,
-			Data:      p.Data,
-			EntryType: p.EntryType,
-		}
-	}
-	return res
-}
-
 // 给定一个AppendResp的match index，检测该index是否已经超过半数,过半则更新
 // 返回值：是否有更新
 func (r *Raft) maybeUpdateCommit(index uint64) {
 	if r.State != StateLeader {
-		panic("only leader need to check commit")
+		panic("[maybeUpdateCommit] Only leader need to check commit ")
 	}
 	committed_count := 0
 	for _, knownPeerIndex := range r.Prs {
@@ -251,12 +237,9 @@ func (r *Raft) maybeUpdateCommit(index uint64) {
 			if index > r.RaftLog.committed {
 				r.RaftLog.committed = index
 				// 按照hint4 要求，commit更新后立刻广播
-				for id := range r.Prs {
-					if id == r.id {
-						continue
-					}
+				r.broadcast(func(id uint64) {
 					r.sendAppend(id)
-				}
+				})
 				return
 			}
 		}
@@ -272,6 +255,16 @@ func (r *Raft) findMatchedLogIndex(prevIndex uint64, prevTerm uint64) (bool, uin
 		}
 	}
 	return false, 0
+}
+
+// 通用广播消息函数
+func (r *Raft) broadcast(f func(id uint64)) {
+	for id := range r.Prs {
+		if id == r.id {
+			continue
+		}
+		f(id)
+	}
 }
 
 /* ==================  工具函数部分 END ================== */
@@ -296,19 +289,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 	if err != nil {
 		return false
 	}
-
 	ents, err := r.RaftLog.EntriesFrom(nextIndex)
 	if err != nil {
 		return false
 	}
-	// // 添加空操作日志
-	// if len(ents) == 0 {
-	// 	ents = []pb.Entry{{
-	// 		Term:  r.Term,
-	// 		Index: nextIndex,
-	// 		Data:  nil,
-	// 	}}
-	// }
 
 	r.sendMsg(pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
@@ -334,7 +318,6 @@ func (r *Raft) sendAppendResp(to uint64, reject bool, matchIndex uint64) {
 	})
 }
 
-// sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	r.sendMsg(pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeat,
@@ -357,7 +340,7 @@ func (r *Raft) sendRequestVote(to uint64) {
 	lastIndex := r.RaftLog.LastIndex()
 	lastTerm, err := r.RaftLog.Term(lastIndex)
 	if err != nil {
-		panic("failed to send request vote")
+		panic("[send@ReqeustVote] Failed to send request vote ")
 	}
 	r.sendMsg(pb.Message{
 		MsgType: pb.MessageType_MsgRequestVote,
@@ -448,7 +431,6 @@ func (r *Raft) becomeLeader() {
 
 // 检验票数是否过半，过半则变为Leader
 func (r *Raft) maybeBecomeLeader() {
-	// TODO 优化速度?
 	var agree_count = 0
 	for _, agree := range r.votes {
 		if agree {
@@ -462,7 +444,6 @@ func (r *Raft) maybeBecomeLeader() {
 
 // 检验是否收到到所有回复，仍未过半则变为Follower
 func (r *Raft) maybeBecomeFollower() {
-	// TODO 优化速度?
 	var agree_count = 0
 	for _, agree := range r.votes {
 		if agree {
@@ -478,14 +459,16 @@ func (r *Raft) maybeBecomeFollower() {
 
 /* ==================  step函数部分 START ================== */
 
-// Step the entrance of handle message, see `MessageType`
-// on `eraftpb.proto` for what msgs should be handled
-// 即 当前raft结点收到新信息Message后该如何处理
+// Raft 消息处理的入口
+// 不同类型的消息请参见 `eraftpb.proto` 中的 `MessageType` 枚举
+// 即：当前 Raft 节点在收到 Message 后的处理逻辑从此处开始
 func (r *Raft) Step(m pb.Message) error {
-	// 收到更大term的消息，应该强制更新
+
+	// 任何角色收到任何更大term的消息，应该强制变为follower
 	if r.Term < m.Term {
 		r.becomeFollower(m.Term, 0) // 此时并不知道谁是leader
 	}
+
 	switch r.State {
 	case StateFollower:
 		r.stepFollower(m)
@@ -506,39 +489,9 @@ func (r *Raft) stepFollower(m pb.Message) error {
 			r.sendHeartbeatResp(m.From, true)
 		}
 	case pb.MessageType_MsgHup:
-		r.becomeCandidate()
-		// 广播Message RequestVote
-		for id := range r.Prs {
-			if id == r.id {
-				r.votes[r.id] = true
-				continue
-			}
-			r.sendRequestVote(id)
-		}
-		// 避免特殊情况：集群中只有一个节点
-		r.maybeBecomeLeader()
-		r.maybeBecomeFollower()
+		r.handleHub(m)
 	case pb.MessageType_MsgRequestVote:
-		lastIndex := r.RaftLog.LastIndex()
-		lastTerm, err := r.RaftLog.Term(lastIndex)
-		if err != nil {
-			panic("failed to get last entry's term")
-		}
-		/* ======== CONDITION BREAKPOINT ======== */
-		cb_from := m.From
-		cb_to := m.To
-		_ = cb_from + cb_to
-		/* ======== CONDITION BREAKPOINT ======== */
-		if m.LogTerm > lastTerm || (m.LogTerm == lastTerm && m.Index >= lastIndex) {
-			if r.Vote == 0 || r.Vote == m.From {
-				r.sendRequestVoteResp(m.From, false)
-				r.Vote = m.From
-			} else {
-				r.sendRequestVoteResp(m.From, true)
-			}
-		} else {
-			r.sendRequestVoteResp(m.From, true)
-		}
+		r.handleRequestVote(m)
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
 	}
@@ -547,25 +500,9 @@ func (r *Raft) stepFollower(m pb.Message) error {
 func (r *Raft) stepCandidate(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
-		r.becomeCandidate()
-		// 广播Message RequestVote
-		for id := range r.Prs {
-			if id == r.id {
-				r.votes[r.id] = true
-				continue
-			}
-			r.sendRequestVote(id)
-		}
-		// 避免特殊情况：集群中只有一个节点
-		r.maybeBecomeLeader()
-		r.maybeBecomeFollower()
+		r.handleHub(m)
 	case pb.MessageType_MsgRequestVote:
-		if m.Term > r.Term {
-			r.sendRequestVoteResp(m.From, false)
-			r.becomeFollower(m.Term, m.From)
-		} else {
-			r.sendRequestVoteResp(m.From, true)
-		}
+		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 		if !m.Reject {
 			r.votes[m.From] = true
@@ -575,9 +512,7 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		r.maybeBecomeLeader()
 		r.maybeBecomeFollower()
 	case pb.MessageType_MsgAppend:
-		if r.Term <= m.Term {
-			r.becomeFollower(m.Term, m.From)
-		}
+		r.handleAppendEntries(m)
 	}
 	return nil
 }
@@ -585,12 +520,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgBeat:
 		// 广播Message HeartBeat
-		for id := range r.Prs {
-			if id == r.id {
-				continue
-			}
+		r.broadcast(func(id uint64) {
 			r.sendHeartbeat(id)
-		}
+		})
 	case pb.MessageType_MsgHeartbeatResponse:
 		if !m.Reject {
 			// 如果Follower缺少日志，应该补全
@@ -599,13 +531,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			}
 		} else {
 			// 这个部分不应该触发,在Step主入口处理
-			panic("[Leader@HeartbeatResponse] HeartbeatResponse reject = true should not be handled here")
-		}
-	case pb.MessageType_MsgAppend:
-		if r.Term < m.Term {
-			r.becomeFollower(m.Term, m.From)
-		} else if r.Term == m.Term {
-			panic("[Fatal Logic Error] multiple leaders in a term !!!")
+			panic("[stepLeader@HeartbeatResponse] HeartbeatResponse 'reject = true' should not be handled here ")
 		}
 	case pb.MessageType_MsgAppendResponse:
 		id := m.From
@@ -615,7 +541,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			// 某个Index半数以上回应，更新Committed
 			matchTerm, err := r.RaftLog.Term(m.Index)
 			if err != nil {
-				panic("[Leader@AppendResponse] Failed to get match entry's term ")
+				panic("[stepLeader@AppendResponse] Failed to get match entry's term ")
 			}
 			// 只有当前term日志项才可作为commitIndex
 			if matchTerm == m.Term {
@@ -623,10 +549,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			}
 		} else {
 			// TODO 解决拒绝情况的Progress维护，此时RESP中Index的含义是？
-			r.Prs[id].Next = max(1, m.Index)
+			r.Prs[id].Next = max(1, m.Index+1)
 			r.sendAppend(id)
 		}
-
 	case pb.MessageType_MsgPropose:
 		startIndex := r.RaftLog.LastIndex() + 1
 		r.Prs[r.id].Match = r.RaftLog.LastIndex() + uint64(len(m.Entries))
@@ -639,31 +564,80 @@ func (r *Raft) stepLeader(m pb.Message) error {
 				Data:  ent.Data,
 			})
 		}
-		// 广播新日志
-		for id := range r.Prs {
-			if id == r.id {
-				continue
-			}
-			if is_send := r.sendAppend(id); !is_send {
-				panic("failed when sending append message")
-			}
-		}
+		// 广播Append新日志
+		r.broadcast(func(id uint64) {
+			r.sendAppend(id)
+		})
 		// 避免特殊情况：集群中只有一个节点
 		r.maybeUpdateCommit(r.RaftLog.LastIndex())
 	case pb.MessageType_MsgRequestVote:
-		if m.Term == r.Term {
-			r.sendRequestVoteResp(m.From, true)
-		}
-	}
+		r.handleRequestVote(m)
 
+	}
 	return nil
 }
 
 /* ==================  step函数部分 END ================== */
 
-// handleAppendEntries handle AppendEntries RPC request
+/* ==================  handle函数部分 START ==================*/
+
+// 处理所有MsgRequestVote的逻辑，发起投票广播
+func (r *Raft) handleHub(_ pb.Message) {
+	switch r.State {
+	case StateFollower, StateCandidate:
+		r.becomeCandidate()
+		r.votes[r.id] = true
+		// 广播Message RequestVote
+		r.broadcast(func(id uint64) {
+			r.sendRequestVote(id)
+		})
+		// 避免特殊情况：集群中只有一个节点
+		r.maybeBecomeLeader()
+		r.maybeBecomeFollower()
+	case StateLeader:
+		panic("[stepLeader@Hub] Unexpected MsgHub to leader ")
+	}
+
+}
+
+// 处理所有MsgRequestVote的逻辑，向其他Candidate投票，Follower只会向拥有更加新日志的Candidate投赞成票
+func (r *Raft) handleRequestVote(m pb.Message) {
+	switch r.State {
+	case StateFollower:
+		lastIndex := r.RaftLog.LastIndex()
+		lastTerm, err := r.RaftLog.Term(lastIndex)
+		if err != nil {
+			panic("[stepFollower@RequestVote] Failed to get last entry's term ")
+		}
+		// 确保Candidate拥有更加新的日志
+		if m.LogTerm > lastTerm || (m.LogTerm == lastTerm && m.Index >= lastIndex) {
+			// 确保只投一次票
+			if r.Vote == 0 || r.Vote == m.From {
+				r.sendRequestVoteResp(m.From, false)
+				r.Vote = m.From
+			} else {
+				r.sendRequestVoteResp(m.From, true)
+			}
+		} else {
+			r.sendRequestVoteResp(m.From, true)
+		}
+	case StateCandidate, StateLeader:
+		// Candidate和Leader收到同任期的票，应该拒绝
+		// Message任期更大的情况已在Step()处理
+		if m.Term == r.Term {
+			r.sendRequestVoteResp(m.From, true)
+		}
+	}
+}
+
+// 处理所有MsgAppend的逻辑，实现Follower本地日志与Leader发送日志的同步，其中Follower为核心
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	switch r.State {
+	/*
+		Follower在收到Leader发来的Message后，需要进行：
+		1. 一致性检查
+		2. 删除冲突位置（若有）之后的所有日志，并添加新日志
+	*/
 	case StateFollower:
 		r.Term = max(r.Term, m.Term)
 		r.Lead = m.From
@@ -708,18 +682,28 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 					r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
 				}
 			}
+			// Follower的commit更新
 			if m.Commit > r.RaftLog.committed {
 				if m.Entries != nil {
 					r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
 				} else {
+					// 特殊处理Message日志为空的情况，此时应以Message的prevIndex为准
 					r.RaftLog.committed = min(m.Commit, m.Index)
 				}
 			}
 			r.sendAppendResp(m.From, false, r.RaftLog.LastIndex())
 		}
-		// TODO 考虑是否需要维护lead信息
+	case StateCandidate:
+		if r.Term == m.Term {
+			r.becomeFollower(m.Term, m.From)
+		}
+	case StateLeader:
+		panic("[stepLeader@Append] Term check and role downgrade are already handled in Step()  ")
 	}
+
 }
+
+/* ==================  handle函数部分 END ==================*/
 
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
