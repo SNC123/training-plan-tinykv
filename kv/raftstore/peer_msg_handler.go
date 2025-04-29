@@ -2,14 +2,18 @@ package raftstore
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 
+	"github.com/Connor1996/badger"
 	"github.com/Connor1996/badger/y"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/runner"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/snap"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/log"
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
@@ -38,11 +42,119 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
+// applyRaftCommand 应用一条 RaftCmdRequest 请求
+func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.RaftCmdResponse {
+	resp := &raft_cmdpb.RaftCmdResponse{}
+
+	for _, r := range req.Requests {
+		switch r.CmdType {
+		case raft_cmdpb.CmdType_Get:
+			getReq := r.Get
+			value, err := engine_util.GetCF(d.peerStorage.Engines.Kv, getReq.Cf, getReq.Key)
+			getResp := &raft_cmdpb.GetResponse{}
+			if err == nil {
+				getResp.Value = value
+			} else if err == badger.ErrKeyNotFound {
+				getResp.Value = nil
+			} else {
+				BindRespError(resp, err)
+				return resp
+			}
+			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
+				CmdType: raft_cmdpb.CmdType_Get,
+				Get:     getResp,
+			})
+
+		case raft_cmdpb.CmdType_Put:
+			putReq := r.Put
+			err := engine_util.PutCF(d.peerStorage.Engines.Kv, putReq.Cf, putReq.Key, putReq.Value)
+			if err != nil {
+				BindRespError(resp, err)
+				return resp
+			}
+			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
+				CmdType: raft_cmdpb.CmdType_Put,
+				Put:     &raft_cmdpb.PutResponse{},
+			})
+
+		case raft_cmdpb.CmdType_Delete:
+			delReq := r.Delete
+			err := engine_util.DeleteCF(d.peerStorage.Engines.Kv, delReq.Cf, delReq.Key)
+			if err != nil {
+				BindRespError(resp, err)
+				return resp
+			}
+			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
+				CmdType: raft_cmdpb.CmdType_Delete,
+				Delete:  &raft_cmdpb.DeleteResponse{},
+			})
+
+		// TODO snapshot处理
+		case raft_cmdpb.CmdType_Snap:
+		}
+	}
+
+	return resp
+}
+
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
 	}
+	// HandleRaftReady中需要完成（按顺序）：
+	// 1. Raft软状态更新（lead和RaftState）
+	// 2. 持久化日志条目（通过SaveReadyState持久化HardState和日志）
+	// 3. 应用已提交日志
+	// 4. 通过网络发送 Raft 消息给其他节点
+	raftGroup := *d.peer.RaftGroup
 	// Your Code Here (2B).
+	if !raftGroup.HasReady() {
+		return
+	}
+	ready := raftGroup.Ready()
+	// Raft软状态更新
+	if ready.SoftState != nil {
+		d.RaftGroup.Raft.Lead = ready.SoftState.Lead
+		d.RaftGroup.Raft.State = ready.SoftState.RaftState
+	}
+	// 持久化提交日志
+	if !reflect.DeepEqual(ready.HardState, pb.HardState{}) || len(ready.Entries) > 0 {
+		if _, err := d.peerStorage.SaveReadyState(&ready); err != nil {
+			panic(err)
+		}
+	}
+	// 应用已提交日志
+	if len(ready.CommittedEntries) > 0 {
+		for _, ent := range ready.CommittedEntries {
+			if ent.EntryType == pb.EntryType_EntryNormal {
+				if len(ent.Data) == 0 {
+					continue
+				}
+				cmd := raft_cmdpb.RaftCmdRequest{}
+				if err := cmd.Unmarshal(ent.Data); err != nil {
+					log.Panicf("Failed to unmarshal RaftCmdRequest: %v", err)
+				}
+
+				resp := d.applyRaftCommand(&cmd)
+
+				// 找到对应回调函数，通知结果
+				// TODO 优化查找速度(使用map)
+				for _, prop := range d.proposals {
+					if (prop.index != ent.Index) || (prop.term != ent.Term) {
+						continue
+					}
+					prop.cb.Done(resp)
+				}
+
+			} else {
+				panic("[handleRaftReady] The handle of EntryType ConfChange is not yet implemented")
+			}
+		}
+	}
+	// 发送消息(OPTIMIZE: 异步处理)
+	if len(ready.Messages) > 0 {
+		d.Send(d.ctx.trans, ready.Messages)
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -114,6 +226,21 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	data, err := msg.Marshal()
+	if err != nil {
+		cb.Done(ErrResp(err))
+		return
+	}
+
+	d.proposals = append(d.proposals, &proposal{
+		index: d.nextProposalIndex(),
+		term:  d.Term(),
+		cb:    cb,
+	})
+
+	if err := d.RaftGroup.Propose(data); err != nil {
+		cb.Done(ErrResp(err))
+	}
 }
 
 func (d *peerMsgHandler) onTick() {
@@ -223,9 +350,9 @@ func (d *peerMsgHandler) validateRaftMessage(msg *rspb.RaftMessage) bool {
 	return true
 }
 
-/// Checks if the message is sent to the correct peer.
-///
-/// Returns true means that the message can be dropped silently.
+// / Checks if the message is sent to the correct peer.
+// /
+// / Returns true means that the message can be dropped silently.
 func (d *peerMsgHandler) checkMessage(msg *rspb.RaftMessage) bool {
 	fromEpoch := msg.GetRegionEpoch()
 	isVoteMsg := util.IsVoteMessage(msg.Message)

@@ -308,6 +308,25 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	if len(entries) == 0 {
+		log.Warnf("Entries should not be empty")
+		return nil
+	}
+	regionId := ps.region.Id
+	startIndex := entries[0].Index
+	lastIndex, _ := ps.LastIndex()
+
+	// 删除旧的未提交日志
+	for i := startIndex; i <= lastIndex; i++ {
+		raftWB.DeleteMeta(meta.RaftLogKey(regionId, i))
+	}
+	// 写入新日志
+	for _, ent := range entries {
+		raftWB.SetMeta(meta.RaftLogKey(regionId, ent.Index), &ent)
+	}
+	// 更新PeerStorage中的LastIndex和LastTerm
+	ps.raftState.LastIndex = entries[len(entries)-1].Index
+	ps.raftState.LastTerm = entries[len(entries)-1].Term
 	return nil
 }
 
@@ -329,8 +348,28 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 // Save memory states to disk.
 // Do not modify ready in this function, this is a requirement to advance the ready object properly later.
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
-	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+	raftWB := new(engine_util.WriteBatch)
+	kvWB := new(engine_util.WriteBatch)
+
+	/* === RaftLocalState 加入WriteBatch === */
+
+	// 更新HardState
+	ps.raftState.HardState = &ready.HardState
+
+	// 内部更新LastIndex和LastTerm，并将log_entry加入WriteBatch
+	if len(ready.Entries) > 0 {
+		ps.Append(ready.Entries, raftWB)
+	}
+	// 将更新后的RaftLocalState加入WriteBatch
+	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+
+	/* === TODO 完成snaptshot写入 === */
+	// Hint: `ApplySnapshot()`
+
+	/* === 数据写入Engine === */
+	ps.Engines.WriteRaft(raftWB)
+	ps.Engines.WriteKV(kvWB)
 	return nil, nil
 }
 
