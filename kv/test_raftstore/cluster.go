@@ -210,19 +210,27 @@ func (c *Cluster) CallCommand(request *raft_cmdpb.RaftCmdRequest, timeout time.D
 }
 
 func (c *Cluster) CallCommandOnLeader(request *raft_cmdpb.RaftCmdRequest, timeout time.Duration) (*raft_cmdpb.RaftCmdResponse, *badger.Txn) {
+
+	log.DIYf("req", "on leader request %v", request)
 	startTime := time.Now()
 	regionID := request.Header.RegionId
 	leader := c.LeaderOfRegion(regionID)
 	for {
+		log.DIYf("resp", "retry")
 		if time.Since(startTime) > timeout {
+			log.DIYf("resp", "timeout")
 			return nil, nil
 		}
 		if leader == nil {
+			log.DIYf("resp", "no leader")
 			panic(fmt.Sprintf("can't get leader of region %d", regionID))
 		}
 		request.Header.Peer = leader
 		resp, txn := c.CallCommand(request, 1*time.Second)
+		log.DIYf("resp", "resp %v", resp)
 		if resp == nil {
+			log.DIYf("resp",
+				"can't call command %s on leader %d of region %d", request.String(), leader.GetId(), regionID)
 			log.Debugf("can't call command %s on leader %d of region %d", request.String(), leader.GetId(), regionID)
 			newLeader := c.LeaderOfRegion(regionID)
 			if leader == newLeader {
@@ -232,9 +240,13 @@ func (c *Cluster) CallCommandOnLeader(request *raft_cmdpb.RaftCmdRequest, timeou
 				}
 				peers := region.GetPeers()
 				leader = peers[rand.Int()%len(peers)]
+				log.DIYf("resp",
+					"leader info maybe wrong, use random leader %d of region %d", leader.GetId(), regionID)
 				log.Debugf("leader info maybe wrong, use random leader %d of region %d", leader.GetId(), regionID)
 			} else {
 				leader = newLeader
+				log.DIYf("resp",
+					"use new leader %d of region %d", leader.GetId(), regionID)
 				log.Debugf("use new leader %d of region %d", leader.GetId(), regionID)
 			}
 			continue
@@ -242,9 +254,12 @@ func (c *Cluster) CallCommandOnLeader(request *raft_cmdpb.RaftCmdRequest, timeou
 		if resp.Header.Error != nil {
 			err := resp.Header.Error
 			if err.GetStaleCommand() != nil || err.GetEpochNotMatch() != nil || err.GetNotLeader() != nil {
+				log.DIYf("resp",
+					"encouter retryable err %+v", resp)
 				log.Debugf("encouter retryable err %+v", resp)
 				if err.GetNotLeader() != nil && err.GetNotLeader().Leader != nil {
 					leader = err.GetNotLeader().Leader
+					log.DIYf("resp", "change leader to %v according to error resp", leader)
 				} else {
 					leader = c.LeaderOfRegion(regionID)
 				}
@@ -303,6 +318,7 @@ func (c *Cluster) MustPut(key, value []byte) {
 func (c *Cluster) MustPutCF(cf string, key, value []byte) {
 	req := NewPutCfCmd(cf, key, value)
 	resp, _ := c.Request(key, []*raft_cmdpb.Request{req}, 5*time.Second)
+	log.DIYf("MustPutCF resp", "%v", resp)
 	if resp.Header.Error != nil {
 		panic(resp.Header.Error)
 	}
@@ -312,6 +328,7 @@ func (c *Cluster) MustPutCF(cf string, key, value []byte) {
 	if resp.Responses[0].CmdType != raft_cmdpb.CmdType_Put {
 		panic("resp.Responses[0].CmdType != raft_cmdpb.CmdType_Put")
 	}
+	log.DIYf("MustPutCF ", "succeed")
 }
 
 func (c *Cluster) MustGet(key []byte, value []byte) {

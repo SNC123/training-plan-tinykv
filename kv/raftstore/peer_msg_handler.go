@@ -45,6 +45,8 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 // applyRaftCommand 应用一条 RaftCmdRequest 请求
 func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.RaftCmdResponse {
 	resp := &raft_cmdpb.RaftCmdResponse{}
+	resp.Header = &raft_cmdpb.RaftResponseHeader{}
+	resp.Responses = make([]*raft_cmdpb.Response, 0)
 
 	for _, r := range req.Requests {
 		switch r.CmdType {
@@ -68,6 +70,7 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest) *raft_
 		case raft_cmdpb.CmdType_Put:
 			putReq := r.Put
 			err := engine_util.PutCF(d.peerStorage.Engines.Kv, putReq.Cf, putReq.Key, putReq.Value)
+			log.DIYf("apply raft cmd", "resp %v err %v", resp, err)
 			if err != nil {
 				BindRespError(resp, err)
 				return resp
@@ -91,6 +94,10 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest) *raft_
 
 		// TODO snapshot处理
 		case raft_cmdpb.CmdType_Snap:
+			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
+				CmdType: raft_cmdpb.CmdType_Snap,
+				Snap:    &raft_cmdpb.SnapResponse{},
+			})
 		}
 	}
 
@@ -112,6 +119,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	ready := raftGroup.Ready()
+
 	// Raft软状态更新
 	if ready.SoftState != nil {
 		d.RaftGroup.Raft.Lead = ready.SoftState.Lead
@@ -125,6 +133,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 	// 应用已提交日志
 	if len(ready.CommittedEntries) > 0 {
+		// log.DIYf("raft ready", "%v", ready.CommittedEntries)
 		for _, ent := range ready.CommittedEntries {
 			if ent.EntryType == pb.EntryType_EntryNormal {
 				if len(ent.Data) == 0 {
@@ -143,6 +152,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 					if (prop.index != ent.Index) || (prop.term != ent.Term) {
 						continue
 					}
+					log.DIYf("handle raft ready", "%v", prop)
 					prop.cb.Done(resp)
 				}
 
@@ -155,6 +165,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if len(ready.Messages) > 0 {
 		d.Send(d.ctx.trans, ready.Messages)
 	}
+	d.RaftGroup.Advance(ready)
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -220,6 +231,7 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 }
 
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
+	log.DIYf("propose raft cmd", "%v,%v", d.RaftGroup.Raft.Lead, d.RaftGroup.Raft.State)
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
 		cb.Done(ErrResp(err))

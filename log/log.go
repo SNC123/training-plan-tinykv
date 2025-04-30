@@ -218,21 +218,14 @@ func (l *Logger) logf(t LogType, format string, v ...interface{}) {
 }
 
 // DIY日志颜色输出
-func (l *Logger) DIYf(t LogType, tag string, format string, v ...interface{}) {
-
-	_, logColor := LogTypeToString(t)
-	var s string
-	if l.highlighting {
-		s = "\033" + logColor + "m[" + tag + "] " + fmt.Sprintf(format, v...) + "\033[0m"
-	} else {
-		s = "[" + tag + "] " + fmt.Sprintf(format, v...)
-	}
+func (l *Logger) DIYf(tag string, format string, v ...interface{}) {
+	var s = "[" + tag + "] " + fmt.Sprintf(format, v...)
 	l._log.Output(3, s)
 }
 
 // 自定义日志颜色输出，外部接口
-func DIYf(t LogType, tag string, format string, v ...interface{}) {
-	_log.DIYf(t, tag, format, v...)
+func DIYf(tag string, format string, v ...interface{}) {
+	_log.DIYf(tag, format, v...)
 }
 
 func (l *Logger) Fatal(v ...interface{}) {

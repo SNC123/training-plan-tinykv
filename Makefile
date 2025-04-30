@@ -67,6 +67,9 @@ project2ab:
 
 project2ac:
 	$(GOTEST) ./raft -run 2AC
+	
+test_clean:
+	$(TEST_CLEAN)
 
 project2b:
 	$(TEST_CLEAN)

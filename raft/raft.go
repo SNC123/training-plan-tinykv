@@ -174,17 +174,34 @@ func newRaft(c *Config) *Raft {
 	prs := make(map[uint64]*Progress)
 	votes := make(map[uint64]bool)
 
-	for _, id := range c.peers {
-		lastIndex, err := c.Storage.LastIndex()
-		if err != nil {
-			panic("[newRaft] Failed to get persisted last entry's index ")
-		}
+	lastIndex, err := c.Storage.LastIndex()
+	if err != nil {
+		panic("[newRaft] Failed to get persisted last entry's index ")
+	}
+
+	_, confState, err := c.Storage.InitialState()
+	if err != nil {
+		panic("[newRaft] Failed to get InitialState")
+	}
+
+	// 在2B中需通过confState的Nodes获得集群配置
+	for _, id := range confState.Nodes {
 		prs[id] = &Progress{
 			Match: lastIndex,
 			Next:  lastIndex + 1,
 		}
 		votes[id] = false
 	}
+
+	// 仅2A的测试中使用Config中的Peers获得集群配置
+	for _, id := range c.peers {
+		prs[id] = &Progress{
+			Match: lastIndex,
+			Next:  lastIndex + 1,
+		}
+		votes[id] = false
+	}
+
 	hardState, _, _ := c.Storage.InitialState()
 
 	new_raft := &Raft{
