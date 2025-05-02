@@ -70,11 +70,21 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest) *raft_
 		case raft_cmdpb.CmdType_Put:
 			putReq := r.Put
 			err := engine_util.PutCF(d.peerStorage.Engines.Kv, putReq.Cf, putReq.Key, putReq.Value)
-			log.DIYf("apply raft cmd", "resp %v err %v", resp, err)
 			if err != nil {
 				BindRespError(resp, err)
 				return resp
 			}
+			// 测试是否真的写入
+			value, err := engine_util.GetCF(d.peerStorage.Engines.Kv, putReq.Cf, putReq.Key)
+			if err != nil {
+				panic("[applyRaftCommand] Failed to PutCF")
+			}
+			log.DIYf("apply put", "region %v write to %v target %s get %s",
+				d.regionId, d.storeID(),
+				putReq.Value, value)
+
+			log.DIYf("apply raft cmd", "resp %v err %v", resp, err)
+
 			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
 				CmdType: raft_cmdpb.CmdType_Put,
 				Put:     &raft_cmdpb.PutResponse{},
@@ -92,11 +102,12 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest) *raft_
 				Delete:  &raft_cmdpb.DeleteResponse{},
 			})
 
-		// TODO snapshot处理
 		case raft_cmdpb.CmdType_Snap:
 			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
 				CmdType: raft_cmdpb.CmdType_Snap,
-				Snap:    &raft_cmdpb.SnapResponse{},
+				Snap: &raft_cmdpb.SnapResponse{
+					Region: d.Region(),
+				},
 			})
 		}
 	}
@@ -153,6 +164,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 						continue
 					}
 					log.DIYf("handle raft ready", "%v", prop)
+					prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false) // Snap操作中需要
 					prop.cb.Done(resp)
 				}
 

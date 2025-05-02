@@ -203,6 +203,13 @@ func (l *Logger) log(t LogType, v ...interface{}) {
 }
 
 func (l *Logger) logf(t LogType, format string, v ...interface{}) {
+	// 强制关闭所有日志
+	if level := os.Getenv("LOG_LEVEL"); len(level) != 0 {
+		if level == "none" {
+			return
+		}
+	}
+
 	if l.level|LogLevel(t) != l.level {
 		return
 	}
@@ -219,6 +226,13 @@ func (l *Logger) logf(t LogType, format string, v ...interface{}) {
 
 // DIY日志颜色输出
 func (l *Logger) DIYf(tag string, format string, v ...interface{}) {
+	// 强制关闭所有日志
+	if level := os.Getenv("LOG_LEVEL"); len(level) != 0 {
+		if level == "none" {
+			return
+		}
+	}
+
 	var s = "[" + tag + "] " + fmt.Sprintf(format, v...)
 	l._log.Output(3, s)
 }
