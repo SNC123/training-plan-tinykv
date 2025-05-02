@@ -209,12 +209,12 @@ func (c *NodeSimulator) CallCommandOnStore(storeID uint64, request *raft_cmdpb.R
 
 	cb := message.NewCallback()
 	err := router.SendRaftCommand(request, cb)
-	log.DIYf("call cmd store err", "%v", err)
+	// log.DIYf("call cmd store err", "%v", err)
 	if err != nil {
 		return nil, nil
 	}
 
 	resp := cb.WaitRespWithTimeout(timeout)
-	log.DIYf("call cmd store resp", "%v", resp)
+	// log.DIYf("call cmd store resp", "%v", resp)
 	return resp, cb.Txn
 }

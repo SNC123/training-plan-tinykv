@@ -5,7 +5,6 @@ import (
 	"sync/atomic"
 
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
-	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 
@@ -101,6 +100,6 @@ func (r *RaftstoreRouter) SendRaftCommand(req *raft_cmdpb.RaftCmdRequest, cb *me
 		Callback: cb,
 	}
 	regionID := req.Header.RegionId
-	log.DIYf("router raft cmd", "%v", req)
+	// log.DIYf("router raft cmd", "%v", req)
 	return r.router.send(regionID, message.NewPeerMsg(message.MsgTypeRaftCmd, regionID, cmd))
 }

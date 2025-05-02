@@ -75,15 +75,15 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest) *raft_
 				return resp
 			}
 			// 测试是否真的写入
-			value, err := engine_util.GetCF(d.peerStorage.Engines.Kv, putReq.Cf, putReq.Key)
-			if err != nil {
-				panic("[applyRaftCommand] Failed to PutCF")
-			}
-			log.DIYf("apply put", "region %v write to %v target %s get %s",
-				d.regionId, d.storeID(),
-				putReq.Value, value)
+			// value, err := engine_util.GetCF(d.peerStorage.Engines.Kv, putReq.Cf, putReq.Key)
+			// if err != nil {
+			// 	panic("[applyRaftCommand] Failed to PutCF")
+			// }
+			// log.DIYf("apply put", "region %v write to %v target %s get %s",
+			// 	d.regionId, d.storeID(),
+			// 	putReq.Value, value)
 
-			log.DIYf("apply raft cmd", "resp %v err %v", resp, err)
+			// log.DIYf("apply raft cmd", "resp %v err %v", resp, err)
 
 			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
 				CmdType: raft_cmdpb.CmdType_Put,
@@ -163,7 +163,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 					if (prop.index != ent.Index) || (prop.term != ent.Term) {
 						continue
 					}
-					log.DIYf("handle raft ready", "%v", prop)
+					// log.DIYf("handle raft ready", "%v", prop)
 					prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false) // Snap操作中需要
 					prop.cb.Done(resp)
 				}
@@ -243,7 +243,7 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 }
 
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
-	log.DIYf("propose raft cmd", "%v,%v", d.RaftGroup.Raft.Lead, d.RaftGroup.Raft.State)
+	// log.DIYf("propose raft cmd", "%v,%v", d.RaftGroup.Raft.Lead, d.RaftGroup.Raft.State)
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
 		cb.Done(ErrResp(err))

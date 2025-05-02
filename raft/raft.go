@@ -18,6 +18,7 @@ import (
 	"errors"
 	"math/rand"
 
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -426,7 +427,8 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 // 发觉leader故障，进行新一轮选举
 func (r *Raft) becomeCandidate() {
 	r.State = StateCandidate
-	r.Term++                        // 仅在发起新选举时增加term
+	r.Term++ // 仅在发起新选举时增加term
+	log.DIYf("becomeCandidate", "raft %v become candidate and term = %v", r.id, r.Term)
 	r.votes = make(map[uint64]bool) // 注意清空votes
 	r.resetRandomizedElectionTimeout()
 }
@@ -500,6 +502,7 @@ func (r *Raft) Step(m pb.Message) error {
 func (r *Raft) stepFollower(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgHeartbeat:
+		r.electionElapsed = 0
 		if m.Term >= r.Term {
 			r.sendHeartbeatResp(m.From, false)
 		} else {
@@ -516,6 +519,8 @@ func (r *Raft) stepFollower(m pb.Message) error {
 }
 func (r *Raft) stepCandidate(m pb.Message) error {
 	switch m.MsgType {
+	case pb.MessageType_MsgHeartbeat:
+		r.electionElapsed = 0
 	case pb.MessageType_MsgHup:
 		r.handleHub(m)
 	case pb.MessageType_MsgRequestVote:
@@ -556,10 +561,11 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			r.Prs[id].Match = m.Index
 			r.Prs[id].Next = m.Index + 1
 			// 某个Index半数以上回应，更新Committed
-			matchTerm, err := r.RaftLog.Term(m.Index)
-			if err != nil {
-				panic("[stepLeader@AppendResponse] Failed to get match entry's term ")
-			}
+			matchTerm, _ := r.RaftLog.Term(m.Index)
+			// if err != nil {
+			// 	log.DIYf("stepLeader", "failed to get term for index = %v\n %v", m.Index, err)
+			// 	panic("[stepLeader@AppendResponse] Failed to get match entry's term")
+			// }
 			// 只有当前term日志项才可作为commitIndex
 			if matchTerm == m.Term {
 				r.maybeUpdateCommit(m.Index)
