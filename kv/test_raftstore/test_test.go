@@ -166,6 +166,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 	}
 	title = title + " (" + part + ")" // 3A or 3B
 
+	/* ====== 集群初始化（5个节点）====== */
 	nservers := 5
 	cfg := config.NewTestConfig()
 	if maxraftlog != -1 {
@@ -180,7 +181,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 	defer cluster.Shutdown()
 
 	electionTimeout := cfg.RaftBaseTickInterval * time.Duration(cfg.RaftElectionTimeoutTicks)
-	// Wait for leader election
+	/* ====== 等待Leader选举完成 ====== */
 	time.Sleep(2 * electionTimeout)
 
 	done_partitioner := int32(0)
@@ -197,6 +198,8 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		// log.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
+
+		/* ====== 客户端并发运行（3 次迭代） ====== */
 		go SpawnClientsAndWait(t, ch_clients, nclients, func(cli int, t *testing.T) {
 			j := 0
 			defer func() {
@@ -225,12 +228,13 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				}
 			}
 		})
-
+		/* ====== 启动网络混乱（丢包、分区）） ====== */
 		if unreliable || partitions {
 			// Allow the clients to perform some operations without interruption
 			time.Sleep(300 * time.Millisecond)
 			go networkchaos(t, cluster, ch_partitioner, &done_partitioner, unreliable, partitions, electionTimeout)
 		}
+		/* ====== 执行 confchange（动态增删 Peer） ====== */
 		if confchange {
 			// Allow the clients to perfrom some operations without interruption
 			time.Sleep(100 * time.Millisecond)
@@ -240,6 +244,8 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		atomic.StoreInt32(&done_clients, 1)     // tell clients to quit
 		atomic.StoreInt32(&done_partitioner, 1) // tell partitioner to quit
 		atomic.StoreInt32(&done_confchanger, 1) // tell confchanger to quit
+
+		/* ====== 网络异常恢复 ====== */
 		if unreliable || partitions {
 			// log.Printf("wait for partitioner\n")
 			<-ch_partitioner
@@ -255,6 +261,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		// log.Printf("wait for clients\n")
 		<-ch_clients
 
+		/* ====== 节点崩溃恢复（如启用） ====== */
 		if crash {
 			log.Warnf("shutdown servers\n")
 			for i := 1; i <= nservers; i++ {
@@ -270,6 +277,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			}
 		}
 
+		/* ====== 验证客户端提交数据的正确性 + 清理现场 ====== */
 		for cli := 0; cli < nclients; cli++ {
 			// log.Printf("read from clients %d\n", cli)
 			j := <-clnts[cli]
@@ -289,6 +297,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			}
 		}
 
+		/* ====== Raft 日志 GC 验证 ====== */
 		if maxraftlog > 0 {
 			time.Sleep(1 * time.Second)
 
@@ -321,7 +330,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				}
 			}
 		}
-
+		/* ====== Region 分裂验证（如启用）====== */
 		if split {
 			r := cluster.GetRegion([]byte(""))
 			if len(r.GetEndKey()) == 0 {

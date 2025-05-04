@@ -3,6 +3,7 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/Connor1996/badger"
@@ -16,6 +17,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/util/worker"
 	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 	"github.com/pingcap-incubator/tinykv/raft"
@@ -354,8 +356,10 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 
 	/* === RaftLocalState 加入WriteBatch === */
 
-	// 更新HardState
-	ps.raftState.HardState = &ready.HardState
+	// 在hardState非空时更新localRaftState中的HardState
+	if !reflect.DeepEqual(ready.HardState, pb.HardState{}) {
+		ps.raftState.HardState = &ready.HardState
+	}
 
 	// 内部更新LastIndex和LastTerm，并将log_entry加入WriteBatch
 	if len(ready.Entries) > 0 {

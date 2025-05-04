@@ -18,7 +18,6 @@ import (
 	"errors"
 	"math/rand"
 
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -428,7 +427,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 func (r *Raft) becomeCandidate() {
 	r.State = StateCandidate
 	r.Term++ // 仅在发起新选举时增加term
-	log.DIYf("becomeCandidate", "raft %v become candidate and term = %v", r.id, r.Term)
+	// log.DIYf("becomeCandidate", "raft %v become candidate and term = %v", r.id, r.Term)
 	r.votes = make(map[uint64]bool) // 注意清空votes
 	r.resetRandomizedElectionTimeout()
 }
