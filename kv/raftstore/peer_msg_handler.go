@@ -13,6 +13,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/log"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
@@ -115,6 +116,31 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest) *raft_
 	return resp
 }
 
+func (d *peerMsgHandler) doneResp(resp *raft_cmdpb.RaftCmdResponse, entry *eraftpb.Entry) {
+	for len(d.proposals) > 0 {
+		prop := d.proposals[0]
+		if entry.Index < prop.index {
+			return
+		}
+		if entry.Index > prop.index {
+			prop.cb.Done(ErrRespStaleCommand(d.RaftGroup.Raft.Term))
+			d.proposals = d.proposals[1:]
+			continue
+		}
+		if entry.Term < prop.term {
+			return
+		}
+		if entry.Term > prop.term {
+			prop.cb.Done(ErrRespStaleCommand(d.RaftGroup.Raft.Term))
+			d.proposals = d.proposals[1:]
+			continue
+		}
+		d.proposals = d.proposals[1:]
+		prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+		prop.cb.Done(resp)
+	}
+}
+
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
@@ -156,17 +182,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				}
 
 				resp := d.applyRaftCommand(&cmd)
-
-				// 找到对应回调函数，通知结果
-				// TODO 优化查找速度(使用map)
-				for _, prop := range d.proposals {
-					if (prop.index != ent.Index) || (prop.term != ent.Term) {
-						continue
-					}
-					// log.DIYf("handle raft ready", "%v", prop)
-					prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false) // Snap操作中需要
-					prop.cb.Done(resp)
-				}
+				d.doneResp(resp, &ent)
 
 			} else {
 				panic("[handleRaftReady] The handle of EntryType ConfChange is not yet implemented")

@@ -218,11 +218,11 @@ func (c *Cluster) CallCommandOnLeader(request *raft_cmdpb.RaftCmdRequest, timeou
 	for {
 		// log.DIYf("resp", "retry")
 		if time.Since(startTime) > timeout {
-			log.DIYf("resp", "timeout")
+			// log.DIYf("resp", "timeout")
 			return nil, nil
 		}
 		if leader == nil {
-			log.DIYf("resp", "no leader")
+			// log.DIYf("resp", "no leader")
 			panic(fmt.Sprintf("can't get leader of region %d", regionID))
 		}
 		request.Header.Peer = leader
