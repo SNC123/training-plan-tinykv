@@ -476,6 +476,8 @@ func TestOneSnapshot2C(t *testing.T) {
 		},
 	)
 
+	log.DIYf("after partition", "")
+
 	// write some data to trigger snapshot
 	for i := 100; i < 115; i++ {
 		cluster.MustPutCF(cf, []byte(fmt.Sprintf("k%d", i)), []byte(fmt.Sprintf("v%d", i)))
@@ -485,10 +487,14 @@ func TestOneSnapshot2C(t *testing.T) {
 	MustGetCfNone(cluster.engines[1], cf, []byte("k100"))
 	cluster.ClearFilters()
 
+	log.DIYf("recover", "")
+
 	// Now snapshot must applied on
 	MustGetCfEqual(cluster.engines[1], cf, []byte("k1"), []byte("v1"))
 	MustGetCfEqual(cluster.engines[1], cf, []byte("k100"), []byte("v100"))
 	MustGetCfNone(cluster.engines[1], cf, []byte("k2"))
+
+	log.DIYf("get cf success", "")
 
 	cluster.StopServer(1)
 	cluster.StartServer(1)

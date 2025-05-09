@@ -14,7 +14,9 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -92,14 +94,17 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+
 	persistFirstIndex, err := l.storage.FirstIndex()
 	if err != nil || len(l.entries) <= 1 {
 		return
 	}
 	dummyIndex := l.entries[0].Index
 	memoryFirstIndex := dummyIndex + 1
+	// log.DIYf("compact", "memory %v, persist %v", memoryFirstIndex, persistFirstIndex)
 	if memoryFirstIndex < persistFirstIndex {
 		compactOffset := persistFirstIndex - dummyIndex
+		// log.DIYf("compact", "%v entreis", compactOffset+1)
 		l.entries = l.entries[compactOffset:]
 	}
 }

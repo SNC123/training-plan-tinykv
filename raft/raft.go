@@ -18,7 +18,6 @@ import (
 	"errors"
 	"math/rand"
 
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -299,6 +298,7 @@ func (r *Raft) sendMsg(m pb.Message) error {
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
+	// log.DIYf("send append", "from %v to %v", r.id, to)
 	prs := r.Prs[to]
 	nextIndex := prs.Next
 	prevIndex := nextIndex - 1
@@ -396,7 +396,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 	if err != nil {
 		panic(err)
 	}
-
+	// log.DIYf("send snapshot", "from %v to %v", r.id, to)
 	r.sendMsg(pb.Message{
 		MsgType:  pb.MessageType_MsgSnapshot,
 		From:     r.id,
@@ -432,6 +432,7 @@ func (r *Raft) tick() {
 // becomeFollower transform this peer's state to Follower
 // 即该raft结点知道leader存在，转变为follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
+	// log.DIYf("becomeFollower", "raft %v becomd follower and term = %v", r.id, r.Term)
 	r.State = StateFollower
 	r.Lead = lead
 	r.Term = term
@@ -444,13 +445,14 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 func (r *Raft) becomeCandidate() {
 	r.State = StateCandidate
 	r.Term++ // 仅在发起新选举时增加term
-	log.DIYf("becomeCandidate", "raft %v become candidate and term = %v", r.id, r.Term)
+	// log.DIYf("becomeCandidate", "raft %v become candidate and term = %v", r.id, r.Term)
 	r.votes = make(map[uint64]bool) // 注意清空votes
 	r.resetRandomizedElectionTimeout()
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
+	// log.DIYf("becomeLeader", "raft %v becomd leader and term = %v", r.id, r.Term)
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
 	r.Lead = r.id
@@ -539,6 +541,11 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgHeartbeat:
 		r.electionElapsed = 0
+		if m.Term >= r.Term {
+			r.sendHeartbeatResp(m.From, false)
+		} else {
+			r.sendHeartbeatResp(m.From, true)
+		}
 	case pb.MessageType_MsgHup:
 		r.handleHub(m)
 	case pb.MessageType_MsgRequestVote:
