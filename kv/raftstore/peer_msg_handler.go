@@ -8,6 +8,7 @@ import (
 	"github.com/Connor1996/badger"
 	"github.com/Connor1996/badger/y"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/runner"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/snap"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
@@ -48,7 +49,24 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest) *raft_
 	resp := &raft_cmdpb.RaftCmdResponse{}
 	resp.Header = &raft_cmdpb.RaftResponseHeader{}
 	resp.Responses = make([]*raft_cmdpb.Response, 0)
-
+	// apply Admin日志
+	if req.AdminRequest != nil {
+		ar := req.AdminRequest
+		switch ar.CmdType {
+		case raft_cmdpb.AdminCmdType_CompactLog:
+			resp.AdminResponse = &raft_cmdpb.AdminResponse{
+				CmdType: raft_cmdpb.AdminCmdType_CompactLog,
+			}
+			d.peerStorage.applyState.TruncatedState.Index = ar.CompactLog.CompactIndex
+			d.peerStorage.applyState.TruncatedState.Term = ar.CompactLog.CompactTerm
+			// 持久化
+			engine_util.PutMeta(d.ctx.engine.Kv, meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+			// 派发log-GC任务
+			d.ScheduleCompactLog(req.AdminRequest.CompactLog.CompactIndex)
+		}
+		return resp
+	}
+	// apply普通日志
 	for _, r := range req.Requests {
 		switch r.CmdType {
 		case raft_cmdpb.CmdType_Get:
@@ -156,6 +174,32 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	ready := raftGroup.Ready()
+
+	// Snapshot处理
+	if !reflect.DeepEqual(ready.Snapshot, pb.Snapshot{}) {
+		result, err := d.peerStorage.ApplySnapshot(
+			&ready.Snapshot,
+			new(engine_util.WriteBatch),
+			new(engine_util.WriteBatch),
+		)
+		if err != nil {
+			panic(err)
+		}
+
+		done := make(chan bool, 1)
+		d.peerStorage.snapState.StateType = snap.SnapState_Applying
+		d.peerStorage.regionSched <- runner.RegionTaskApply{
+			RegionId: result.Region.Id,
+			SnapMeta: ready.Snapshot.Metadata,
+			StartKey: result.PrevRegion.StartKey,
+			EndKey:   result.PrevRegion.EndKey,
+		}
+
+		<-done
+		d.peerStorage.snapState.StateType = snap.SnapState_Relax
+		// d.RaftGroup.Advance(ready)
+		return
+	}
 
 	// Raft软状态更新
 	if ready.SoftState != nil {

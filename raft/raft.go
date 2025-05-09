@@ -305,10 +305,12 @@ func (r *Raft) sendAppend(to uint64) bool {
 
 	prevTerm, err := r.RaftLog.Term(prevIndex)
 	if err != nil {
+		r.sendSnapshot(to)
 		return false
 	}
 	ents, err := r.RaftLog.EntriesFrom(nextIndex)
 	if err != nil {
+		r.sendSnapshot(to)
 		return false
 	}
 
@@ -386,6 +388,20 @@ func (r *Raft) sendPropose(to uint64, ents []*pb.Entry) {
 		From:    r.id,
 		To:      to,
 		Entries: ents,
+	})
+}
+
+func (r *Raft) sendSnapshot(to uint64) {
+	snapshot, err := r.RaftLog.storage.Snapshot()
+	if err != nil {
+		panic(err)
+	}
+
+	r.sendMsg(pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		From:     r.id,
+		To:       to,
+		Snapshot: &snapshot,
 	})
 }
 
@@ -514,6 +530,8 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	}
 	return nil
 }
@@ -731,7 +749,27 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
-	// Your Code Here (2C).
+	switch r.State {
+	case StateFollower:
+		r.Lead = m.From
+		metadata := m.Snapshot.Metadata
+		if metadata.Index <= r.RaftLog.committed {
+			return
+		}
+		// 重置为snapshot状态
+		r.Term = metadata.Term
+		r.RaftLog.applied = metadata.Index
+		r.RaftLog.committed = metadata.Index
+		r.RaftLog.stabled = metadata.Index
+		r.RaftLog.entries = nil
+		// 标记当前raftlog等待安装snapshot
+		r.RaftLog.pendingSnapshot = m.Snapshot
+		// 重设集群配置
+		r.Prs = make(map[uint64]*Progress)
+		for _, id := range metadata.ConfState.Nodes {
+			r.Prs[id] = &Progress{}
+		}
+	}
 }
 
 // addNode add a new node to raft group

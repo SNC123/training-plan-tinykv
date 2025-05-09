@@ -344,7 +344,34 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
-	return nil, nil
+
+	newRegion := snapData.Region
+	prevRegion := ps.region
+	// 清除旧数据
+	if err := ps.clearMeta(kvWB, raftWB); err != nil {
+		return nil, err
+	}
+	ps.clearExtraData(prevRegion)
+
+	// 更新applyState
+	ps.applyState.AppliedIndex = snapshot.Metadata.Index
+	ps.applyState.TruncatedState = &rspb.RaftTruncatedState{
+		Index: snapshot.Metadata.Index,
+		Term:  snapshot.Metadata.Term,
+	}
+	kvWB.SetMeta(meta.ApplyStateKey(newRegion.Id), ps.applyState)
+
+	// 更新raftState
+	ps.raftState.LastIndex = snapshot.Metadata.Index
+	ps.raftState.LastTerm = snapshot.Metadata.Term
+	raftWB.SetMeta(meta.RaftStateKey(newRegion.Id), ps.raftState)
+
+	ps.region = newRegion
+
+	return &ApplySnapResult{
+		PrevRegion: prevRegion,
+		Region:     newRegion,
+	}, nil
 }
 
 // Save memory states to disk.
@@ -368,13 +395,19 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// 将更新后的RaftLocalState加入WriteBatch
 	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
 
-	/* === TODO 完成snaptshot写入 === */
-	// Hint: `ApplySnapshot()`
+	applySnapResult := &ApplySnapResult{}
+	if !reflect.DeepEqual(ready.Snapshot, pb.Snapshot{}) {
+		result, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
+		if err != nil {
+			return nil, err
+		}
+		applySnapResult = result
+	}
 
 	/* === 数据写入Engine === */
 	ps.Engines.WriteRaft(raftWB)
 	ps.Engines.WriteKV(kvWB)
-	return nil, nil
+	return applySnapResult, nil
 }
 
 func (ps *PeerStorage) ClearData() {

@@ -168,6 +168,10 @@ func (rn *RawNode) Ready() Ready {
 		HardState:        pb.HardState{},
 	}
 
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		rd.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
+	}
+
 	// SoftState 仅在变化时返回
 	if !reflect.DeepEqual(rn.prevSoftState, ss) {
 		rd.SoftState = ss
@@ -202,6 +206,9 @@ func (rn *RawNode) HasReady() bool {
 	if len(rn.Raft.msgs) > 0 {
 		return true
 	}
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		return true
+	}
 	return false
 }
 
@@ -220,6 +227,9 @@ func (rn *RawNode) Advance(rd Ready) {
 	rn.Raft.msgs = nil
 	rn.prevSoftState = &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State}
 	rn.prevHardState = pb.HardState{Term: rn.Raft.Term, Vote: rn.Raft.Vote, Commit: rn.Raft.RaftLog.committed}
+	rn.Raft.RaftLog.pendingSnapshot = nil
+	// 触发RaftGC
+	rn.Raft.RaftLog.maybeCompact()
 }
 
 // GetProgress return the Progress of this node and its peers, if this
