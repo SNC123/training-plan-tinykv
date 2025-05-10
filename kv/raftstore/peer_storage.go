@@ -180,7 +180,6 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 		ps.snapTriedCnt = 0
 		return snapshot, err
 	}
-
 	log.Infof("%s requesting snapshot", ps.Tag)
 	ps.snapTriedCnt++
 	ch := make(chan *eraftpb.Snapshot, 1)
@@ -266,6 +265,7 @@ func (ps *PeerStorage) clearExtraData(newRegion *metapb.Region) {
 	if bytes.Compare(newEndKey, oldEndKey) < 0 || (len(oldEndKey) == 0 && len(newEndKey) != 0) {
 		ps.clearRange(newRegion.Id, newEndKey, oldEndKey)
 	}
+	log.Infof("%v cleared extra data", ps.Tag)
 }
 
 // ClearMeta delete stale metadata like raftState, applyState, regionState and raft log entries
@@ -368,6 +368,29 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 
 	ps.region = newRegion
 
+	applySnapResult := &ApplySnapResult{
+		PrevRegion: prevRegion,
+		Region:     newRegion,
+	}
+
+	ps.snapState.StateType = snap.SnapState_Applying
+
+	notifier := make(chan bool)
+
+	ps.regionSched <- &runner.RegionTaskApply{
+		RegionId: applySnapResult.Region.Id,
+		SnapMeta: snapshot.Metadata,
+		StartKey: applySnapResult.PrevRegion.StartKey,
+		EndKey:   applySnapResult.PrevRegion.EndKey,
+		Notifier: notifier,
+	}
+	log.DIYf("handle raft ready", "dispatced apply task")
+
+	ok := <-notifier
+	if !ok {
+		panic("Failed to apply snapshot")
+	}
+
 	return &ApplySnapResult{
 		PrevRegion: prevRegion,
 		Region:     newRegion,
@@ -397,6 +420,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 
 	applySnapResult := &ApplySnapResult{}
 	if !reflect.DeepEqual(ready.Snapshot, pb.Snapshot{}) {
+		log.DIYf("save ready state", "apply snapshot")
 		result, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 		if err != nil {
 			return nil, err

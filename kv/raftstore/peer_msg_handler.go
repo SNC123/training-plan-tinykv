@@ -2,7 +2,6 @@ package raftstore
 
 import (
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/Connor1996/badger"
@@ -45,7 +44,7 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 }
 
 // applyRaftCommand 应用一条 RaftCmdRequest 请求
-func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.RaftCmdResponse {
+func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest, index uint64) *raft_cmdpb.RaftCmdResponse {
 	resp := &raft_cmdpb.RaftCmdResponse{}
 	resp.Header = &raft_cmdpb.RaftResponseHeader{}
 	resp.Responses = make([]*raft_cmdpb.Response, 0)
@@ -130,6 +129,11 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest) *raft_
 			})
 		}
 	}
+	// 修改并持久化appiled index
+	d.peerStorage.applyState.AppliedIndex = index
+	kvWB := new(engine_util.WriteBatch)
+	kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+	kvWB.WriteToDB(d.peerStorage.Engines.Kv)
 
 	return resp
 }
@@ -154,8 +158,11 @@ func (d *peerMsgHandler) doneResp(resp *raft_cmdpb.RaftCmdResponse, entry *eraft
 			continue
 		}
 		d.proposals = d.proposals[1:]
-		prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-		prop.cb.Done(resp)
+		// 只有含callback的命令才需要回应
+		if prop.cb != nil {
+			prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+			prop.cb.Done(resp)
+		}
 	}
 }
 
@@ -176,30 +183,28 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	ready := raftGroup.Ready()
 
 	// Snapshot处理
-	if !reflect.DeepEqual(ready.Snapshot, pb.Snapshot{}) {
-		result, err := d.peerStorage.ApplySnapshot(
-			&ready.Snapshot,
-			new(engine_util.WriteBatch),
-			new(engine_util.WriteBatch),
-		)
-		if err != nil {
-			panic(err)
-		}
+	// if !reflect.DeepEqual(ready.Snapshot, pb.Snapshot{}) {
+	// 	log.DIYf("handle raft ready", "apply snapshot")
+	// 	result, err := d.peerStorage.ApplySnapshot(
+	// 		&ready.Snapshot,
+	// 		new(engine_util.WriteBatch),
+	// 		new(engine_util.WriteBatch),
+	// 	)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
 
-		done := make(chan bool, 1)
-		d.peerStorage.snapState.StateType = snap.SnapState_Applying
-		d.peerStorage.regionSched <- runner.RegionTaskApply{
-			RegionId: result.Region.Id,
-			SnapMeta: ready.Snapshot.Metadata,
-			StartKey: result.PrevRegion.StartKey,
-			EndKey:   result.PrevRegion.EndKey,
-		}
+	// 	d.peerStorage.snapState.StateType = snap.SnapState_Applying
+	// 	d.peerStorage.regionSched <- runner.RegionTaskApply{
+	// 		RegionId: result.Region.Id,
+	// 		SnapMeta: ready.Snapshot.Metadata,
+	// 		StartKey: result.PrevRegion.StartKey,
+	// 		EndKey:   result.PrevRegion.EndKey,
+	// 	}
+	// 	log.DIYf("handle raft ready", "dispatced apply task")
 
-		<-done
-		d.peerStorage.snapState.StateType = snap.SnapState_Relax
-		// d.RaftGroup.Advance(ready)
-		return
-	}
+	// 	return
+	// }
 
 	// Raft软状态更新
 	if ready.SoftState != nil {
@@ -207,11 +212,11 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		d.RaftGroup.Raft.State = ready.SoftState.RaftState
 	}
 	// 持久化提交日志
-	if !reflect.DeepEqual(ready.HardState, pb.HardState{}) || len(ready.Entries) > 0 {
-		if _, err := d.peerStorage.SaveReadyState(&ready); err != nil {
-			panic(err)
-		}
+	_, err := d.peerStorage.SaveReadyState(&ready)
+	if err != nil {
+		panic(err)
 	}
+
 	// 应用已提交日志
 	if len(ready.CommittedEntries) > 0 {
 		// log.DIYf("raft ready", "%v", ready.CommittedEntries)
@@ -225,7 +230,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 					log.Panicf("Failed to unmarshal RaftCmdRequest: %v", err)
 				}
 
-				resp := d.applyRaftCommand(&cmd)
+				resp := d.applyRaftCommand(&cmd, ent.Index)
 				d.doneResp(resp, &ent)
 
 			} else {
@@ -622,8 +627,10 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 
 	appliedIdx := d.peerStorage.AppliedIndex()
 	firstIdx, _ := d.peerStorage.FirstIndex()
+	// log.DIYf("raft gc tick", "raft %v applied = %v, fisrt = %v", d.peer.PeerId(), appliedIdx, firstIdx)
 	var compactIdx uint64
 	if appliedIdx > firstIdx && appliedIdx-firstIdx >= d.ctx.cfg.RaftLogGcCountLimit {
+		log.DIYf("raft gc tick", "raft %v trigger GC, applied = %v, fisrt = %v", d.peer.PeerId(), appliedIdx, firstIdx)
 		compactIdx = appliedIdx
 	} else {
 		return
@@ -645,6 +652,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 	// Create a compact log request and notify directly.
 	regionID := d.regionId
 	request := newCompactLogRequest(regionID, d.Meta, compactIdx, term)
+	log.DIYf("raft gc tick", " ticker send a GC request to region %v", regionID)
 	d.proposeRaftCommand(request, nil)
 }
 

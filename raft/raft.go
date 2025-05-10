@@ -18,6 +18,7 @@ import (
 	"errors"
 	"math/rand"
 
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -392,11 +393,21 @@ func (r *Raft) sendPropose(to uint64, ents []*pb.Entry) {
 }
 
 func (r *Raft) sendSnapshot(to uint64) {
-	snapshot, err := r.RaftLog.storage.Snapshot()
-	if err != nil {
+	log.DIYf("send snapshot", "from %v to %v", r.id, to)
+	var snapshot = pb.Snapshot{}
+	for {
+		// log.DIYf("snapshot", "waiting")
+		snap, err := r.RaftLog.storage.Snapshot()
+		if err == nil {
+			log.DIYf("snapshot", "get snapshot successfully")
+			snapshot = snap
+			break
+		}
+		if err == ErrSnapshotTemporarilyUnavailable {
+			continue
+		}
 		panic(err)
 	}
-	// log.DIYf("send snapshot", "from %v to %v", r.id, to)
 	r.sendMsg(pb.Message{
 		MsgType:  pb.MessageType_MsgSnapshot,
 		From:     r.id,
@@ -445,14 +456,14 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 func (r *Raft) becomeCandidate() {
 	r.State = StateCandidate
 	r.Term++ // 仅在发起新选举时增加term
-	// log.DIYf("becomeCandidate", "raft %v become candidate and term = %v", r.id, r.Term)
+	log.DIYf("becomeCandidate", "raft %v become candidate and term = %v", r.id, r.Term)
 	r.votes = make(map[uint64]bool) // 注意清空votes
 	r.resetRandomizedElectionTimeout()
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
-	// log.DIYf("becomeLeader", "raft %v becomd leader and term = %v", r.id, r.Term)
+	log.DIYf("becomeLeader", "raft %v becomd leader and term = %v", r.id, r.Term)
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
 	r.Lead = r.id
@@ -758,6 +769,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 func (r *Raft) handleSnapshot(m pb.Message) {
 	switch r.State {
 	case StateFollower:
+		log.DIYf("raft handle snapshot msg", " raft %v receive snapshot from %v", r.id, m.From)
 		r.Lead = m.From
 		metadata := m.Snapshot.Metadata
 		if metadata.Index <= r.RaftLog.committed {
@@ -776,6 +788,8 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		for _, id := range metadata.ConfState.Nodes {
 			r.Prs[id] = &Progress{}
 		}
+
+		r.sendAppendResp(m.From, false, metadata.Index)
 	}
 }
 

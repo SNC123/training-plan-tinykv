@@ -165,14 +165,16 @@ func (c *NodeSimulator) RunStore(cfg *config.Config, engine *engine_util.Engines
 }
 
 func (c *NodeSimulator) StopStore(storeID uint64) {
+	log.DIYf("stop store", "waiting for lock")
 	c.Lock()
 	defer c.Unlock()
-
+	log.DIYf("stop store", "get lock")
 	node := c.nodes[storeID]
 	if node == nil {
 		panic(fmt.Sprintf("Can not find store %d", storeID))
 	}
 	node.Stop()
+
 	delete(c.nodes, storeID)
 	c.trans.RemoveStore(storeID)
 }

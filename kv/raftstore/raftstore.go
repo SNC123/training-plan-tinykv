@@ -104,8 +104,8 @@ type Transport interface {
 	Send(msg *rspb.RaftMessage) error
 }
 
-/// loadPeers loads peers in this store. It scans the db engine, loads all regions and their peers from it
-/// WARN: This store should not be used before initialized.
+// / loadPeers loads peers in this store. It scans the db engine, loads all regions and their peers from it
+// / WARN: This store should not be used before initialized.
 func (bs *Raftstore) loadPeers() ([]*peer, error) {
 	// Scan region meta to get saved regions.
 	startKey := meta.RegionMetaMinKey
@@ -285,9 +285,11 @@ func (bs *Raftstore) startWorkers(peers []*peer) {
 }
 
 func (bs *Raftstore) shutDown() {
+	log.DIYf("raftstore", "starting shutdown")
 	close(bs.closeCh)
 	bs.wg.Wait()
 	bs.tickDriver.stop()
+	log.DIYf("raftstore", "tickDriver stopped")
 	if bs.workers == nil {
 		return
 	}
@@ -298,6 +300,7 @@ func (bs *Raftstore) shutDown() {
 	workers.raftLogGCWorker.Stop()
 	workers.schedulerWorker.Stop()
 	workers.wg.Wait()
+	log.DIYf("raftstore", "finished shutdown")
 }
 
 func CreateRaftstore(cfg *config.Config) (*RaftstoreRouter, *Raftstore) {
