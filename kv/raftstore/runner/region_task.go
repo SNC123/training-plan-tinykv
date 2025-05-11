@@ -56,22 +56,21 @@ func NewRegionTaskHandler(engines *engine_util.Engines, mgr *snap.SnapManager) *
 }
 
 func (r *regionTaskHandler) Handle(t worker.Task) {
-	log.DIYf("region task", "get task")
+	// log.DIYf("region task", "get task")
 	switch t.(type) {
 	case *RegionTaskGen:
-		log.DIYf("task handle", "handling region gen task")
+		// log.DIYf("task handle", "handling region gen task")
 		task := t.(*RegionTaskGen)
 		// It is safe for now to handle generating and applying snapshot concurrently,
 		// but it may not when merge is implemented.
 		r.ctx.handleGen(task.RegionId, task.Notifier)
-		log.DIYf("task handle", "handled region gen task")
+		// log.DIYf("task handle", "handled region gen task")
 	case *RegionTaskApply:
-		log.DIYf("task handle", "handling region apply task")
+		// log.DIYf("task handle", "handling region apply task")
 		task := t.(*RegionTaskApply)
 		r.ctx.handleApply(task.RegionId, task.Notifier, task.StartKey, task.EndKey, task.SnapMeta)
-		log.DIYf("task handle", "handled region apply task")
+		// log.DIYf("task handle", "handled region apply task")
 	case *RegionTaskDestroy:
-		log.DIYf("task handle", "handling region destory task")
 		task := t.(*RegionTaskDestroy)
 		r.ctx.cleanUpRange(task.RegionId, task.StartKey, task.EndKey)
 	}
@@ -126,15 +125,13 @@ func (snapCtx *snapContext) applySnap(regionId uint64, startKey, endKey []byte, 
 
 // handleApply tries to apply the snapshot of the specified Region. It calls `applySnap` to do the actual work.
 func (snapCtx *snapContext) handleApply(regionId uint64, notifier chan<- bool, startKey, endKey []byte, snapMeta *eraftpb.SnapshotMetadata) {
-	log.DIYf("regiontask", "start apply snapshot")
+	// log.DIYf("regiontask", "start apply snapshot")
 	err := snapCtx.applySnap(regionId, startKey, endKey, snapMeta)
 	if err != nil {
 		notifier <- false
 		log.Fatalf("failed to apply snap!!!. err: %v", err)
 	}
-	log.DIYf("regiontask", "finish apply snapshot bf")
 	notifier <- true
-	log.DIYf("regiontask", "finish apply snapshot af")
 }
 
 // cleanUpRange cleans up the data within the range.

@@ -15,7 +15,6 @@
 package raft
 
 import (
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -104,7 +103,7 @@ func (l *RaftLog) maybeCompact() {
 	memoryFirstIndex := dummyIndex + 1
 	if memoryFirstIndex < persistFirstIndex {
 		compactOffset := persistFirstIndex - dummyIndex
-		log.DIYf("compact", "%v entreis", compactOffset+1)
+		// log.DIYf("compact", "%v entreis", compactOffset+1)
 		l.entries = l.entries[compactOffset:]
 	}
 }

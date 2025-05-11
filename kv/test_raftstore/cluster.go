@@ -165,7 +165,6 @@ func (c *Cluster) StopServer(storeID uint64) {
 }
 
 func (c *Cluster) StartServer(storeID uint64) {
-	log.DIYf("start server", " raft %v start", storeID)
 	engine := c.engines[storeID]
 	// do not share config because of different DBPath
 	storeCfg := *c.cfg

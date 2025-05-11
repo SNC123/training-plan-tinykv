@@ -384,11 +384,13 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		EndKey:   applySnapResult.PrevRegion.EndKey,
 		Notifier: notifier,
 	}
-	log.DIYf("handle raft ready", "dispatced apply task")
+	log.DIYf("apply snapshot", "dispatced apply task")
 
 	ok := <-notifier
 	if !ok {
 		panic("Failed to apply snapshot")
+	} else {
+		ps.snapState.StateType = snap.SnapState_Relax
 	}
 
 	return &ApplySnapResult{
@@ -420,7 +422,6 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 
 	applySnapResult := &ApplySnapResult{}
 	if !reflect.DeepEqual(ready.Snapshot, pb.Snapshot{}) {
-		log.DIYf("save ready state", "apply snapshot")
 		result, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 		if err != nil {
 			return nil, err

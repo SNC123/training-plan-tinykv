@@ -2,8 +2,6 @@ package worker
 
 import (
 	"sync"
-
-	"github.com/pingcap-incubator/tinykv/log"
 )
 
 type TaskStop struct{}
@@ -36,7 +34,7 @@ func (w *Worker) Start(handler TaskHandler) {
 		for {
 			Task := <-w.receiver
 			if _, ok := Task.(TaskStop); ok {
-				log.DIYf("worker", "%v exited", w.name)
+				// log.DIYf("worker", "%v exited", w.name)
 				return
 			}
 			handler.Handle(Task)

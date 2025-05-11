@@ -285,11 +285,11 @@ func (bs *Raftstore) startWorkers(peers []*peer) {
 }
 
 func (bs *Raftstore) shutDown() {
-	log.DIYf("raftstore", "starting shutdown")
+	// log.DIYf("raftstore", "starting shutdown")
 	close(bs.closeCh)
 	bs.wg.Wait()
 	bs.tickDriver.stop()
-	log.DIYf("raftstore", "tickDriver stopped")
+	// log.DIYf("raftstore", "tickDriver stopped")
 	if bs.workers == nil {
 		return
 	}
@@ -300,7 +300,7 @@ func (bs *Raftstore) shutDown() {
 	workers.raftLogGCWorker.Stop()
 	workers.schedulerWorker.Stop()
 	workers.wg.Wait()
-	log.DIYf("raftstore", "finished shutdown")
+	// log.DIYf("raftstore", "finished shutdown")
 }
 
 func CreateRaftstore(cfg *config.Config) (*RaftstoreRouter, *Raftstore) {

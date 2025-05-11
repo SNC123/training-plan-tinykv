@@ -18,7 +18,6 @@ import (
 	"errors"
 	"math/rand"
 
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -255,6 +254,7 @@ func (r *Raft) maybeUpdateCommit(index uint64) {
 			if index > r.RaftLog.committed {
 				r.RaftLog.committed = index
 				// 按照hint4 要求，commit更新后立刻广播
+				// log.DIYf("maybeUpdateCommit", "broadcast sendappend")
 				r.broadcast(func(id uint64) {
 					r.sendAppend(id)
 				})
@@ -305,12 +305,16 @@ func (r *Raft) sendAppend(to uint64) bool {
 	prevIndex := nextIndex - 1
 
 	prevTerm, err := r.RaftLog.Term(prevIndex)
-	if err != nil {
+	if err == ErrCompacted {
+		// log.DIYf("send append term", "Index %v is compacted", prevIndex)
 		r.sendSnapshot(to)
+		return false
+	} else if err != nil {
 		return false
 	}
 	ents, err := r.RaftLog.EntriesFrom(nextIndex)
-	if err != nil {
+	if err == ErrCompacted {
+		// log.DIYf("send append ents", "Index %v is compacted", nextIndex)
 		r.sendSnapshot(to)
 		return false
 	}
@@ -393,13 +397,13 @@ func (r *Raft) sendPropose(to uint64, ents []*pb.Entry) {
 }
 
 func (r *Raft) sendSnapshot(to uint64) {
-	log.DIYf("send snapshot", "from %v to %v", r.id, to)
+	// log.DIYf("send snapshot", "from %v to %v", r.id, to)
 	var snapshot = pb.Snapshot{}
 	for {
 		// log.DIYf("snapshot", "waiting")
 		snap, err := r.RaftLog.storage.Snapshot()
 		if err == nil {
-			log.DIYf("snapshot", "get snapshot successfully")
+			// log.DIYf("snapshot", "get snapshot successfully")
 			snapshot = snap
 			break
 		}
@@ -424,6 +428,7 @@ func (r *Raft) tick() {
 	case StateFollower, StateCandidate:
 		r.electionElapsed++
 		if r.electionElapsed >= r.randomizedElectionTimeout {
+			// log.DIYf("election timeout", "raft %v ", r.id)
 			r.electionElapsed = 0
 			// 发起内部广播选举Message
 			r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
@@ -444,6 +449,8 @@ func (r *Raft) tick() {
 // 即该raft结点知道leader存在，转变为follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// log.DIYf("becomeFollower", "raft %v becomd follower and term = %v", r.id, r.Term)
+	r.electionElapsed = 0
+	r.heartbeatTimeout = 0
 	r.State = StateFollower
 	r.Lead = lead
 	r.Term = term
@@ -454,16 +461,20 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 // becomeCandidate transform this peer's state to candidate
 // 发觉leader故障，进行新一轮选举
 func (r *Raft) becomeCandidate() {
+	r.electionElapsed = 0
+	r.heartbeatElapsed = 0
 	r.State = StateCandidate
 	r.Term++ // 仅在发起新选举时增加term
-	log.DIYf("becomeCandidate", "raft %v become candidate and term = %v", r.id, r.Term)
+	// log.DIYf("becomeCandidate", "raft %v become candidate and term = %v", r.id, r.Term)
 	r.votes = make(map[uint64]bool) // 注意清空votes
 	r.resetRandomizedElectionTimeout()
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
-	log.DIYf("becomeLeader", "raft %v becomd leader and term = %v", r.id, r.Term)
+	r.electionElapsed = 0
+	r.heartbeatElapsed = 0
+	// log.DIYf("becomeLeader", "raft %v becomd leader and term = %v", r.id, r.Term)
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
 	r.Lead = r.id
@@ -532,6 +543,7 @@ func (r *Raft) stepFollower(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgHeartbeat:
 		r.electionElapsed = 0
+		// log.DIYf("eletionElapsed reset", "raft(follower) %v", r.id)
 		if m.Term >= r.Term {
 			r.sendHeartbeatResp(m.From, false)
 		} else {
@@ -551,6 +563,7 @@ func (r *Raft) stepFollower(m pb.Message) error {
 func (r *Raft) stepCandidate(m pb.Message) error {
 	switch m.MsgType {
 	case pb.MessageType_MsgHeartbeat:
+		// log.DIYf("eletionElapsed reset", "raft(candidate) %v", r.id)
 		r.electionElapsed = 0
 		if m.Term >= r.Term {
 			r.sendHeartbeatResp(m.From, false)
@@ -584,7 +597,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	case pb.MessageType_MsgHeartbeatResponse:
 		if !m.Reject {
 			// 如果Follower缺少日志，应该补全
-			if r.Prs[m.From].Match <= r.RaftLog.committed {
+			if r.Prs[m.From].Match < r.RaftLog.committed {
+				// log.DIYf("HeartbeatResp", "raft %v matchIndex %v <= raft(leader) %v committed %v",
+				// 	m.From, r.Prs[m.From].Match, r.id, r.RaftLog.committed)
 				r.sendAppend(m.From)
 			}
 		} else {
@@ -592,6 +607,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			panic("[stepLeader@HeartbeatResponse] HeartbeatResponse 'reject = true' should not be handled here ")
 		}
 	case pb.MessageType_MsgAppendResponse:
+		// log.DIYf("msg append resp", "receive resp from %v", m.From)
 		id := m.From
 		if !m.Reject {
 			r.Prs[id].Match = m.Index
@@ -610,6 +626,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			// AppendResponse为Reject,应回退一位
 			// TODO 优化回退速度（例如按任期加速回退）
 			r.Prs[id].Next = max(1, r.Prs[id].Next-1)
+			// log.DIYf("append resp", "raft %v reject prev append, resend append", m.From)
 			r.sendAppend(id)
 		}
 	case pb.MessageType_MsgPropose:
@@ -625,6 +642,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			})
 		}
 		// 广播Append新日志
+		// log.DIYf("leadr propose", "broadcast sendappend")
 		r.broadcast(func(id uint64) {
 			r.sendAppend(id)
 		})
@@ -641,7 +659,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 
 /* ==================  handle函数部分 START ==================*/
 
-// 处理所有MsgRequestVote的逻辑，发起投票广播
+// 处理所有MsgHub的逻辑，发起投票广播
 func (r *Raft) handleHub(_ pb.Message) {
 	switch r.State {
 	case StateFollower, StateCandidate:
@@ -769,7 +787,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 func (r *Raft) handleSnapshot(m pb.Message) {
 	switch r.State {
 	case StateFollower:
-		log.DIYf("raft handle snapshot msg", " raft %v receive snapshot from %v", r.id, m.From)
+		// log.DIYf("raft handle snapshot msg", " raft %v receive snapshot from %v", r.id, m.From)
 		r.Lead = m.From
 		metadata := m.Snapshot.Metadata
 		if metadata.Index <= r.RaftLog.committed {
@@ -780,7 +798,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		r.RaftLog.applied = metadata.Index
 		r.RaftLog.committed = metadata.Index
 		r.RaftLog.stabled = metadata.Index
-		r.RaftLog.entries = nil
+		r.RaftLog.entries = []pb.Entry{{Index: metadata.Index, Term: metadata.Term}}
 		// 标记当前raftlog等待安装snapshot
 		r.RaftLog.pendingSnapshot = m.Snapshot
 		// 重设集群配置
@@ -789,7 +807,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 			r.Prs[id] = &Progress{}
 		}
 
-		r.sendAppendResp(m.From, false, metadata.Index)
+		r.sendAppendResp(m.From, true, metadata.Index)
 	}
 }
 

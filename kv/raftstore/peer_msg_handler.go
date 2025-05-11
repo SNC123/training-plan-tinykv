@@ -182,30 +182,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 	ready := raftGroup.Ready()
 
-	// Snapshot处理
-	// if !reflect.DeepEqual(ready.Snapshot, pb.Snapshot{}) {
-	// 	log.DIYf("handle raft ready", "apply snapshot")
-	// 	result, err := d.peerStorage.ApplySnapshot(
-	// 		&ready.Snapshot,
-	// 		new(engine_util.WriteBatch),
-	// 		new(engine_util.WriteBatch),
-	// 	)
-	// 	if err != nil {
-	// 		panic(err)
-	// 	}
-
-	// 	d.peerStorage.snapState.StateType = snap.SnapState_Applying
-	// 	d.peerStorage.regionSched <- runner.RegionTaskApply{
-	// 		RegionId: result.Region.Id,
-	// 		SnapMeta: ready.Snapshot.Metadata,
-	// 		StartKey: result.PrevRegion.StartKey,
-	// 		EndKey:   result.PrevRegion.EndKey,
-	// 	}
-	// 	log.DIYf("handle raft ready", "dispatced apply task")
-
-	// 	return
-	// }
-
 	// Raft软状态更新
 	if ready.SoftState != nil {
 		d.RaftGroup.Raft.Lead = ready.SoftState.Lead
@@ -630,7 +606,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 	// log.DIYf("raft gc tick", "raft %v applied = %v, fisrt = %v", d.peer.PeerId(), appliedIdx, firstIdx)
 	var compactIdx uint64
 	if appliedIdx > firstIdx && appliedIdx-firstIdx >= d.ctx.cfg.RaftLogGcCountLimit {
-		log.DIYf("raft gc tick", "raft %v trigger GC, applied = %v, fisrt = %v", d.peer.PeerId(), appliedIdx, firstIdx)
+		// log.DIYf("raft gc tick", "raft %v trigger GC, applied = %v, fisrt = %v", d.peer.PeerId(), appliedIdx, firstIdx)
 		compactIdx = appliedIdx
 	} else {
 		return
@@ -652,7 +628,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 	// Create a compact log request and notify directly.
 	regionID := d.regionId
 	request := newCompactLogRequest(regionID, d.Meta, compactIdx, term)
-	log.DIYf("raft gc tick", " ticker send a GC request to region %v", regionID)
+	// log.DIYf("raft gc tick", " ticker send a GC request to region %v", regionID)
 	d.proposeRaftCommand(request, nil)
 }
 
