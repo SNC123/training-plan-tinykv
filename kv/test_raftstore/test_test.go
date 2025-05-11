@@ -195,6 +195,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		clnts[i] = make(chan int, 1)
 	}
 	for i := 0; i < 3; i++ {
+		log.DIYf("test", "new round")
 		// log.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
@@ -245,8 +246,11 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		atomic.StoreInt32(&done_partitioner, 1) // tell partitioner to quit
 		atomic.StoreInt32(&done_confchanger, 1) // tell confchanger to quit
 
+		// 检测是否存在
+
 		/* ====== 网络异常恢复 ====== */
 		if unreliable || partitions {
+			log.DIYf("test", "网络异常恢复")
 			// log.Printf("wait for partitioner\n")
 			<-ch_partitioner
 			// reconnect network and submit a request. A client may
@@ -258,6 +262,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			time.Sleep(electionTimeout)
 		}
 
+		log.DIYf("test", "wait for clients")
 		// log.Printf("wait for clients\n")
 		<-ch_clients
 
@@ -267,6 +272,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			for i := 1; i <= nservers; i++ {
 				cluster.StopServer(uint64(i))
 			}
+			log.DIYf("test", "stoppped all servers")
 			// Wait for a while for servers to shutdown, since
 			// shutdown isn't a real crash and isn't instantaneous
 			time.Sleep(electionTimeout)
@@ -275,6 +281,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			for i := 1; i <= nservers; i++ {
 				cluster.StartServer(uint64(i))
 			}
+			log.DIYf("test", "restart all servers")
 		}
 
 		/* ====== 验证客户端提交数据的正确性 + 清理现场 ====== */
@@ -299,6 +306,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 
 		/* ====== Raft 日志 GC 验证 ====== */
 		if maxraftlog > 0 {
+			log.DIYf("test", "GC 验证")
 			time.Sleep(1 * time.Second)
 
 			// Check maximum after the servers have processed all client
@@ -516,6 +524,10 @@ func TestOneSnapshot2C(t *testing.T) {
 func TestSnapshotRecover2C(t *testing.T) {
 	// Test: restarts, snapshots, one client (2C) ...
 	GenericTest(t, "2C", 1, false, true, false, 100, false, false)
+}
+func TestSnapshotDIYPartition2C(t *testing.T) {
+	// Test: restarts, snapshots, one client (2C) ...
+	GenericTest(t, "2C", 1, false, false, true, 100, false, false)
 }
 
 func TestSnapshotRecoverManyClients2C(t *testing.T) {

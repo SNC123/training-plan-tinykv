@@ -384,7 +384,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		EndKey:   applySnapResult.PrevRegion.EndKey,
 		Notifier: notifier,
 	}
-	log.DIYf("apply snapshot", "dispatced apply task")
+	log.DIYf("apply snapshot", "%v dispatced apply task", ps.Tag)
 
 	ok := <-notifier
 	if !ok {

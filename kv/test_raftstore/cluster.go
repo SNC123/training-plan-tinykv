@@ -201,6 +201,7 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 		}
 		return resp, txn
 	}
+	// log.DIYf("request time out", "[%v, %v] has waited too long!!!", reqs)
 	panic("request timeout")
 }
 

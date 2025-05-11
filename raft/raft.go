@@ -18,6 +18,7 @@ import (
 	"errors"
 	"math/rand"
 
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -164,6 +165,8 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
+
+	alive map[uint64]bool
 }
 
 // newRaft return a raft peer with the given config
@@ -424,9 +427,9 @@ func (r *Raft) sendSnapshot(to uint64) {
 
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
+	r.electionElapsed++
 	switch r.State {
 	case StateFollower, StateCandidate:
-		r.electionElapsed++
 		if r.electionElapsed >= r.randomizedElectionTimeout {
 			// log.DIYf("election timeout", "raft %v ", r.id)
 			r.electionElapsed = 0
@@ -434,6 +437,16 @@ func (r *Raft) tick() {
 			r.Step(pb.Message{MsgType: pb.MessageType_MsgHup})
 		}
 	case StateLeader:
+		if r.electionElapsed >= r.electionTimeout {
+			r.electionElapsed = 0
+			aliveCount := len(r.alive)
+			if aliveCount*2 <= len(r.Prs) {
+				r.becomeFollower(r.Term, 0)
+				return
+			}
+			r.alive = make(map[uint64]bool)
+			r.alive[r.id] = true
+		}
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
@@ -448,7 +461,7 @@ func (r *Raft) tick() {
 // becomeFollower transform this peer's state to Follower
 // 即该raft结点知道leader存在，转变为follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
-	// log.DIYf("becomeFollower", "raft %v becomd follower and term = %v", r.id, r.Term)
+	// log.DIYf("becomeFollower", "raft %v become follower and term = %v", r.id, r.Term)
 	r.electionElapsed = 0
 	r.heartbeatTimeout = 0
 	r.State = StateFollower
@@ -461,21 +474,23 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 // becomeCandidate transform this peer's state to candidate
 // 发觉leader故障，进行新一轮选举
 func (r *Raft) becomeCandidate() {
+	r.Term++ // 仅在发起新选举时增加term
+	// log.DIYf("becomeCandidate", "raft %v become candidate and term = %v", r.id, r.Term)
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
 	r.State = StateCandidate
-	r.Term++ // 仅在发起新选举时增加term
-	// log.DIYf("becomeCandidate", "raft %v become candidate and term = %v", r.id, r.Term)
 	r.votes = make(map[uint64]bool) // 注意清空votes
 	r.resetRandomizedElectionTimeout()
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
+	// NOTE: Leader should propose a noop entry on its term
+	log.DIYf("becomeLeader", "raft %v become leader and term = %v", r.id, r.Term)
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
-	// log.DIYf("becomeLeader", "raft %v becomd leader and term = %v", r.id, r.Term)
-	// NOTE: Leader should propose a noop entry on its term
+	r.alive = make(map[uint64]bool)
+	r.alive[r.id] = true
 	r.State = StateLeader
 	r.Lead = r.id
 	// 执行一个空Propose操作，用于对齐committed
@@ -595,6 +610,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			r.sendHeartbeat(id)
 		})
 	case pb.MessageType_MsgHeartbeatResponse:
+		r.alive[m.From] = true
 		if !m.Reject {
 			// 如果Follower缺少日志，应该补全
 			if r.Prs[m.From].Match < r.RaftLog.committed {
@@ -608,6 +624,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		}
 	case pb.MessageType_MsgAppendResponse:
 		// log.DIYf("msg append resp", "receive resp from %v", m.From)
+		r.alive[m.From] = true
 		id := m.From
 		if !m.Reject {
 			r.Prs[id].Match = m.Index

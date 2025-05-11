@@ -139,31 +139,40 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest, index 
 }
 
 func (d *peerMsgHandler) doneResp(resp *raft_cmdpb.RaftCmdResponse, entry *eraftpb.Entry) {
+	respCount := 0
+	log.DIYf("doneresp", "start resp")
 	for len(d.proposals) > 0 {
+		respCount += 1
 		prop := d.proposals[0]
 		if entry.Index < prop.index {
+			log.DIYf("doneResp", "error case")
 			return
 		}
 		if entry.Index > prop.index {
 			prop.cb.Done(ErrRespStaleCommand(d.RaftGroup.Raft.Term))
+			log.DIYf("doneResp", "server response [%v,%v]", prop.index, prop.term)
 			d.proposals = d.proposals[1:]
 			continue
 		}
 		if entry.Term < prop.term {
+			log.DIYf("doneResp", "error case")
 			return
 		}
 		if entry.Term > prop.term {
 			prop.cb.Done(ErrRespStaleCommand(d.RaftGroup.Raft.Term))
+			log.DIYf("doneResp", "server response [%v,%v]", prop.index, prop.term)
 			d.proposals = d.proposals[1:]
 			continue
 		}
-		d.proposals = d.proposals[1:]
 		// 只有含callback的命令才需要回应
 		if prop.cb != nil {
 			prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 			prop.cb.Done(resp)
+			log.DIYf("doneResp", "server response [%v,%v]", prop.index, prop.term)
 		}
+		d.proposals = d.proposals[1:]
 	}
+	log.DIYf("doneresp", "finish resp, handle %v resps", respCount)
 }
 
 func (d *peerMsgHandler) HandleRaftReady() {
@@ -297,6 +306,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 
+	log.DIYf("propose", "client propose [%v,%v]", d.nextProposalIndex(), d.Term())
 	d.proposals = append(d.proposals, &proposal{
 		index: d.nextProposalIndex(),
 		term:  d.Term(),
