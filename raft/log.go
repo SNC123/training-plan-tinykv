@@ -174,7 +174,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return 0, ErrCompacted
 	}
 	offset := i - dummyIndex
-	if int(offset) >= len(l.entries) {
+	if offset >= uint64(len(l.entries)) {
 		return 0, ErrUnavailable
 	}
 	return l.entries[offset].Term, nil

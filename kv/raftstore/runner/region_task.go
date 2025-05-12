@@ -132,7 +132,7 @@ func (snapCtx *snapContext) handleApply(regionId uint64, notifier chan<- bool, s
 		log.Fatalf("failed to apply snap!!!. err: %v", err)
 	}
 	notifier <- true
-	// log.DIYf("regiontask", "finish apply snapshot")
+	log.DIYf("regiontask", "finish apply snapshot")
 }
 
 // cleanUpRange cleans up the data within the range.

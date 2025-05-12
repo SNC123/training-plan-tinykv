@@ -309,7 +309,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 
 	prevTerm, err := r.RaftLog.Term(prevIndex)
 	if err == ErrCompacted {
-		// log.DIYf("send append term", "Index %v is compacted", prevIndex)
+		log.DIYf("send append term", "raft %v required Index %v is compacted", to, prevIndex)
 		r.sendSnapshot(to)
 		return false
 	} else if err != nil {
@@ -335,14 +335,15 @@ func (r *Raft) sendAppend(to uint64) bool {
 	return true
 }
 
-func (r *Raft) sendAppendResp(to uint64, reject bool, matchIndex uint64) {
+func (r *Raft) sendAppendResp(to uint64, reject bool) {
 	r.sendMsg(pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		From:    r.id,
 		To:      to,
 		Term:    r.Term,
 		Reject:  reject,
-		Index:   matchIndex,
+		Index:   r.RaftLog.LastIndex(),
+		Commit:  r.RaftLog.committed,
 	})
 }
 
@@ -402,6 +403,7 @@ func (r *Raft) sendPropose(to uint64, ents []*pb.Entry) {
 func (r *Raft) sendSnapshot(to uint64) {
 	// log.DIYf("send snapshot", "from %v to %v", r.id, to)
 	var snapshot = pb.Snapshot{}
+	log.DIYf("snapshot", "raft %v is getting snapshot", r.id)
 	for {
 		// log.DIYf("snapshot", "waiting")
 		snap, err := r.RaftLog.storage.Snapshot()
@@ -415,6 +417,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 		}
 		panic(err)
 	}
+	log.DIYf("snapshot", "raft %v send snapshot to %v", r.id, to)
 	r.sendMsg(pb.Message{
 		MsgType:  pb.MessageType_MsgSnapshot,
 		From:     r.id,
@@ -441,6 +444,7 @@ func (r *Raft) tick() {
 			r.electionElapsed = 0
 			aliveCount := len(r.alive)
 			if aliveCount*2 <= len(r.Prs) {
+				log.DIYf("leader resgin", "raft %v regisn", r.id)
 				r.becomeFollower(r.Term, 0)
 				return
 			}
@@ -642,7 +646,8 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		} else {
 			// AppendResponse为Reject,应回退一位
 			// TODO 优化回退速度（例如按任期加速回退）
-			r.Prs[id].Next = max(1, r.Prs[id].Next-1)
+			r.Prs[id].Next = m.Commit + 1
+			r.Prs[id].Match = m.Commit
 			// log.DIYf("append resp", "raft %v reject prev append, resend append", m.From)
 			r.sendAppend(id)
 		}
@@ -739,7 +744,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		// 一致性检查,确保(prevIndex,prevTerm)存在
 		is_matched, matchIndex := r.findMatchedLogIndex(m.Index, m.LogTerm)
 		if !is_matched {
-			r.sendAppendResp(m.From, true, matchIndex)
+			// r.sendAppendResp(m.From, true, matchIndex)
+			r.sendAppendResp(m.From, true)
 		} else {
 			// 从(prevIndex,prevTerm)后第一条开始，匹配原日志和Message日志，若某个不一样则删除后续所有
 			startIndex := matchIndex + 1
@@ -780,13 +786,14 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			// Follower的commit更新
 			if m.Commit > r.RaftLog.committed {
 				if m.Entries != nil {
-					r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+					r.RaftLog.committed = max(r.RaftLog.committed, min(m.Commit, r.RaftLog.LastIndex()))
 				} else {
 					// 特殊处理Message日志为空的情况，此时应以Message的prevIndex为准
-					r.RaftLog.committed = min(m.Commit, m.Index)
+					r.RaftLog.committed = max(r.RaftLog.committed, min(m.Commit, m.Index))
 				}
 			}
-			r.sendAppendResp(m.From, false, r.RaftLog.LastIndex())
+			// r.sendAppendResp(m.From, false, r.RaftLog.LastIndex())
+			r.sendAppendResp(m.From, false)
 		}
 	case StateCandidate:
 		if r.Term == m.Term {
@@ -808,6 +815,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		r.Lead = m.From
 		metadata := m.Snapshot.Metadata
 		if metadata.Index <= r.RaftLog.committed {
+			r.sendAppendResp(m.From, true)
 			return
 		}
 		// 重置为snapshot状态
@@ -823,8 +831,12 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		for _, id := range metadata.ConfState.Nodes {
 			r.Prs[id] = &Progress{}
 		}
+		if r.RaftLog.LastIndex() < m.Index {
+			r.sendAppendResp(m.From, true)
+		}
 
-		r.sendAppendResp(m.From, true, metadata.Index)
+		log.DIYf("handle snapshot", "raft %v memory log set matchIdx = %v", r.id, metadata.Index)
+		r.sendAppendResp(m.From, false)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
+	"github.com/pingcap-incubator/tinykv/raft"
 	"github.com/pingcap-incubator/tinykv/scheduler/pkg/btree"
 	"github.com/pingcap/errors"
 )
@@ -63,6 +64,7 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest, index 
 			// 派发log-GC任务
 			d.ScheduleCompactLog(req.AdminRequest.CompactLog.CompactIndex)
 		}
+
 		return resp
 	}
 	// apply普通日志
@@ -140,10 +142,11 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest, index 
 
 func (d *peerMsgHandler) doneResp(resp *raft_cmdpb.RaftCmdResponse, entry *eraftpb.Entry) {
 	respCount := 0
-	log.DIYf("doneresp", "start resp")
+	// log.DIYf("doneresp", "start resp")
 	for len(d.proposals) > 0 {
 		respCount += 1
 		prop := d.proposals[0]
+		log.DIYf("doneresp detail", "entry [%v,%v] prop[%v,%v]", entry.Index, entry.Term, prop.index, prop.term)
 		if entry.Index < prop.index {
 			log.DIYf("doneResp", "error case")
 			return
@@ -164,15 +167,15 @@ func (d *peerMsgHandler) doneResp(resp *raft_cmdpb.RaftCmdResponse, entry *eraft
 			d.proposals = d.proposals[1:]
 			continue
 		}
-		// 只有含callback的命令才需要回应
-		if prop.cb != nil {
-			prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-			prop.cb.Done(resp)
-			log.DIYf("doneResp", "server response [%v,%v]", prop.index, prop.term)
-		}
+		// // 只有含callback的命令才需要回应
+		// if prop.cb != nil {
+		prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+		prop.cb.Done(resp)
+		// }
+		log.DIYf("doneResp", "server response [%v,%v]", prop.index, prop.term)
 		d.proposals = d.proposals[1:]
 	}
-	log.DIYf("doneresp", "finish resp, handle %v resps", respCount)
+	// log.DIYf("doneresp", "finish resp, handle %v resps", respCount)
 }
 
 func (d *peerMsgHandler) HandleRaftReady() {
@@ -204,7 +207,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 	// 应用已提交日志
 	if len(ready.CommittedEntries) > 0 {
-		// log.DIYf("raft ready", "%v", ready.CommittedEntries)
+		startIndex := ready.CommittedEntries[0].Index
+		lastIndex := ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
+		log.DIYf("raft ready", "raft %v applying committed Entries [%v,%v]", d.PeerId(), startIndex, lastIndex)
 		for _, ent := range ready.CommittedEntries {
 			if ent.EntryType == pb.EntryType_EntryNormal {
 				if len(ent.Data) == 0 {
@@ -223,10 +228,16 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			}
 		}
 	}
+	if len(d.proposals) > 0 && d.peer.RaftGroup.Raft.State == raft.StateLeader {
+		log.DIYf("raft ready", "raft %v unhandled proposals :%v", d.PeerId(), len(d.proposals))
+		log.DIYf("raft ready", "first = [%v,%v]", d.proposals[0].index, d.proposals[0].term)
+	}
+
 	// 发送消息(OPTIMIZE: 异步处理)
 	if len(ready.Messages) > 0 {
 		d.Send(d.ctx.trans, ready.Messages)
 	}
+
 	d.RaftGroup.Advance(ready)
 }
 
@@ -306,12 +317,16 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 
-	log.DIYf("propose", "client propose [%v,%v]", d.nextProposalIndex(), d.Term())
-	d.proposals = append(d.proposals, &proposal{
-		index: d.nextProposalIndex(),
-		term:  d.Term(),
-		cb:    cb,
-	})
+	if cb != nil {
+		log.DIYf("propose", "client propose [%v,%v] send to %v", d.nextProposalIndex(), d.Term(), d.PeerId())
+		d.proposals = append(d.proposals, &proposal{
+			index: d.nextProposalIndex(),
+			term:  d.Term(),
+			cb:    cb,
+		})
+	} else {
+		log.DIYf("propose", "admin request [%v,%v] send to %v", d.nextProposalIndex(), d.Term(), d.PeerId())
+	}
 
 	if err := d.RaftGroup.Propose(data); err != nil {
 		cb.Done(ErrResp(err))
