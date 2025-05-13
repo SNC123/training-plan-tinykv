@@ -371,6 +371,9 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	}
 	raftWB.SetMeta(meta.RaftStateKey(newRegion.Id), ps.raftState)
 
+	// 更新regionState
+	meta.WriteRegionState(kvWB, snapData.Region, rspb.PeerState_Normal)
+
 	ps.region = newRegion
 
 	applySnapResult := &ApplySnapResult{

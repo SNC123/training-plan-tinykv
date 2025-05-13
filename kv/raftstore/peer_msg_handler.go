@@ -72,7 +72,7 @@ func (d *peerMsgHandler) apply(ready *raft.Ready) {
 			d.PeerId(), d.RaftGroup.Raft.RaftLog.GetCommitted(), d.RaftGroup.Raft.RaftLog.GetApplied(),
 		)
 		for id, prs := range d.RaftGroup.Raft.Prs {
-			log.DIYf("apply", "raft %v matchIndex = %v", id, prs.Match)
+			log.DIYf("apply", "raft %v match = %v next = %v", id, prs.Match, prs.Next)
 		}
 		log.DIYf("apply", "raft %v unhandled proposals :%v", d.PeerId(), len(d.proposals))
 		log.DIYf("apply", "first = [%v,%v]", d.proposals[0].index, d.proposals[0].term)

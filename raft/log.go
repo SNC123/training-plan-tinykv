@@ -200,3 +200,27 @@ func (l *RaftLog) GetCommitted() uint64 {
 func (l *RaftLog) GetApplied() uint64 {
 	return l.applied
 }
+
+func (l *RaftLog) Append(preIndex, preTerm uint64, entries []*pb.Entry) bool {
+	if term, err := l.Term(preIndex); err != nil || term != preTerm {
+		return false
+	}
+	offset := l.entries[0].Index
+	for len(entries) > 0 {
+		firstIndex := entries[0].Index
+		if firstIndex > l.LastIndex() || l.entries[firstIndex-offset].Term != entries[0].Term {
+			break
+		}
+		entries = entries[1:]
+	}
+	if len(entries) == 0 {
+		return true
+	}
+	l.entries = l.entries[:entries[0].Index-offset]
+	l.stabled = min(l.stabled, l.LastIndex())
+	for len(entries) > 0 {
+		l.entries = append(l.entries, *entries[0])
+		entries = entries[1:]
+	}
+	return true
+}

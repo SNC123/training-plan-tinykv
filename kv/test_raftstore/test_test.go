@@ -527,7 +527,7 @@ func TestSnapshotRecover2C(t *testing.T) {
 }
 func TestSnapshotDIYPartition2C(t *testing.T) {
 	// Test: restarts, snapshots, one client (2C) ...
-	GenericTest(t, "2C", 1, false, false, true, 10, false, false)
+	GenericTest(t, "2C", 1, false, false, true, 100, false, false)
 }
 
 func TestSnapshotRecoverManyClients2C(t *testing.T) {

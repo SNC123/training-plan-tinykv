@@ -311,6 +311,19 @@ func (r *Raft) GetHardState() pb.HardState {
 	}
 }
 
+func (r *Raft) debugCondtion() bool {
+	all_zero := true
+	for i, progress := range r.Prs {
+		if i == r.id {
+			continue
+		}
+		if progress.Match != 0 {
+			all_zero = false
+		}
+	}
+	return all_zero
+}
+
 /* ==================  工具函数部分 END ================== */
 
 /* ==================  send函数部分 START ================== */
@@ -325,10 +338,17 @@ func (r *Raft) sendMsg(m pb.Message) error {
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
+
 	// log.DIYf("send append", "from %v to %v", r.id, to)
 	prs := r.Prs[to]
 	nextIndex := prs.Next
 	prevIndex := nextIndex - 1
+
+	if r.debugCondtion() {
+		log.DIYf("debugCondition", "raft %v (leader) send prevIndex = %v commit = %v  to %v",
+			r.id, prevIndex, r.RaftLog.committed, to,
+		)
+	}
 
 	prevTerm, err := r.RaftLog.Term(prevIndex)
 	if err == ErrCompacted {
@@ -336,8 +356,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 		r.sendSnapshot(to)
 		return false
 	} else if err != nil {
-		return false
+		log.Errorf("request index =%v", prevIndex)
+		panic(err)
 	}
+
 	ents, err := r.RaftLog.EntriesFrom(nextIndex)
 	if err == ErrCompacted {
 		// log.DIYf("send append ents", "Index %v is compacted", nextIndex)
@@ -669,6 +691,13 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			panic("[stepLeader@HeartbeatResponse] HeartbeatResponse 'reject = true' should not be handled here ")
 		}
 	case pb.MessageType_MsgAppendResponse:
+
+		if r.debugCondtion() {
+			log.DIYf("debugCondition", "raft %v (leader) reveice [%v,%v] commit = %v  from %v",
+				r.id, m.Index, m.Term, m.Commit, m.From,
+			)
+		}
+
 		// log.DIYf("msg append resp", "receive resp from %v", m.From)
 		r.alive[m.From] = true
 		id := m.From
@@ -686,8 +715,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 				r.maybeUpdateCommit(m.Index)
 			}
 		} else {
-			// AppendResponse为Reject,应回退一位
-			// TODO 优化回退速度（例如按任期加速回退）
+			// 结合Snapshot机制，回退至Commit比较合适
 			r.Prs[id].Next = m.Commit + 1
 			r.Prs[id].Match = m.Commit
 			// log.DIYf("append resp", "raft %v reject prev append, resend append", m.From)
@@ -695,8 +723,10 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		}
 	case pb.MessageType_MsgPropose:
 		startIndex := r.RaftLog.LastIndex() + 1
-		r.Prs[r.id].Match = r.RaftLog.LastIndex() + uint64(len(m.Entries))
-		r.Prs[r.id].Next = r.Prs[r.id].Match + 1
+		r.Prs[r.id].Match =
+			r.RaftLog.LastIndex() + uint64(len(m.Entries))
+		r.Prs[r.id].Next =
+			r.Prs[r.id].Match + 1
 		// 将message的日志追加入Raftlog
 		for offset, ent := range m.Entries {
 			r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
@@ -871,7 +901,10 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		// 重设集群配置
 		r.Prs = make(map[uint64]*Progress)
 		for _, id := range metadata.ConfState.Nodes {
-			r.Prs[id] = &Progress{}
+			r.Prs[id] = &Progress{
+				Match: 0,
+				Next:  1,
+			}
 		}
 		if r.RaftLog.LastIndex() < m.Index {
 			r.sendAppendResp(m.From, true)
