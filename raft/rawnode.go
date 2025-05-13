@@ -18,7 +18,6 @@ import (
 	"errors"
 	"reflect"
 
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -223,17 +222,17 @@ func (rn *RawNode) Advance(rd Ready) {
 		last := rd.CommittedEntries[len(rd.CommittedEntries)-1]
 		rn.Raft.RaftLog.applied = last.Index
 
-		var state string
-		if rn.Raft.State == StateLeader {
-			state = "leader"
-		} else {
-			state = "follower"
-		}
-		log.DIYf("advance", "raft %v (%v) applied entries [%v-%v] committed = %v, applied = %v",
-			rn.Raft.id, state,
-			rd.CommittedEntries[0].Index, rd.CommittedEntries[len(rd.CommittedEntries)-1].Index,
-			rn.Raft.RaftLog.committed, rn.Raft.RaftLog.applied,
-		)
+		// var state string
+		// if rn.Raft.State == StateLeader {
+		// 	state = "leader"
+		// } else {
+		// 	state = "follower"
+		// }
+		// log.DIYf("advance", "raft %v (%v) applied entries [%v-%v] committed = %v, applied = %v",
+		// 	rn.Raft.id, state,
+		// 	rd.CommittedEntries[0].Index, rd.CommittedEntries[len(rd.CommittedEntries)-1].Index,
+		// 	rn.Raft.RaftLog.committed, rn.Raft.RaftLog.applied,
+		// )
 	}
 	rn.Raft.msgs = nil
 	rn.prevSoftState = &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State}

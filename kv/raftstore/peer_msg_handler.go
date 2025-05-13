@@ -46,9 +46,9 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 func (d *peerMsgHandler) apply(ready *raft.Ready) {
 	// 应用已提交日志
 	if len(ready.CommittedEntries) > 0 {
-		startIndex := ready.CommittedEntries[0].Index
-		lastIndex := ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
-		log.DIYf("raft ready", "raft %v applying committed Entries [%v,%v]", d.PeerId(), startIndex, lastIndex)
+		// startIndex := ready.CommittedEntries[0].Index
+		// lastIndex := ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
+		// log.DIYf("raft ready", "raft %v applying committed Entries [%v,%v]", d.PeerId(), startIndex, lastIndex)
 		for _, ent := range ready.CommittedEntries {
 			if ent.EntryType == eraftpb.EntryType_EntryNormal {
 				if len(ent.Data) == 0 {
@@ -67,16 +67,16 @@ func (d *peerMsgHandler) apply(ready *raft.Ready) {
 		}
 	}
 
-	if len(d.proposals) > 1 && d.peer.RaftGroup.Raft.State == raft.StateLeader {
-		log.DIYf("apply", "raft %v committed %v applied %v",
-			d.PeerId(), d.RaftGroup.Raft.RaftLog.GetCommitted(), d.RaftGroup.Raft.RaftLog.GetApplied(),
-		)
-		for id, prs := range d.RaftGroup.Raft.Prs {
-			log.DIYf("apply", "raft %v match = %v next = %v", id, prs.Match, prs.Next)
-		}
-		log.DIYf("apply", "raft %v unhandled proposals :%v", d.PeerId(), len(d.proposals))
-		log.DIYf("apply", "first = [%v,%v]", d.proposals[0].index, d.proposals[0].term)
-	}
+	//	if len(d.proposals) > 1 && d.peer.RaftGroup.Raft.State == raft.StateLeader {
+	//		// log.DIYf("apply", "raft %v committed %v applied %v",
+	//		// 	d.PeerId(), d.RaftGroup.Raft.RaftLog.GetCommitted(), d.RaftGroup.Raft.RaftLog.GetApplied(),
+	//		// )
+	//		for id, prs := range d.RaftGroup.Raft.Prs {
+	//			log.DIYf("apply", "raft %v match = %v next = %v", id, prs.Match, prs.Next)
+	//		}
+	//		log.DIYf("apply", "raft %v unhandled proposals :%v", d.PeerId(), len(d.proposals))
+	//		log.DIYf("apply", "first = [%v,%v]", d.proposals[0].index, d.proposals[0].term)
+	//	}
 }
 
 // applyRaftCommand 应用一条 RaftCmdRequest 请求
@@ -166,24 +166,22 @@ func (d *peerMsgHandler) doneResp(resp *raft_cmdpb.RaftCmdResponse, entry *eraft
 	for len(d.proposals) > 0 {
 		respCount += 1
 		prop := d.proposals[0]
-		log.DIYf("doneresp detail", "entry [%v,%v] prop[%v,%v]", entry.Index, entry.Term, prop.index, prop.term)
+		// log.DIYf("doneresp detail", "entry [%v,%v] prop[%v,%v]", entry.Index, entry.Term, prop.index, prop.term)
 		if entry.Index < prop.index {
-			log.DIYf("doneResp", "error case")
 			return
 		}
 		if entry.Index > prop.index {
 			prop.cb.Done(ErrRespStaleCommand(d.RaftGroup.Raft.Term))
-			log.DIYf("doneResp", "server response [%v,%v]", prop.index, prop.term)
+			// log.DIYf("doneResp", "server response [%v,%v]", prop.index, prop.term)
 			d.proposals = d.proposals[1:]
 			continue
 		}
 		if entry.Term < prop.term {
-			log.DIYf("doneResp", "error case")
 			return
 		}
 		if entry.Term > prop.term {
 			prop.cb.Done(ErrRespStaleCommand(d.RaftGroup.Raft.Term))
-			log.DIYf("doneResp", "server response [%v,%v]", prop.index, prop.term)
+			// log.DIYf("doneResp", "server response [%v,%v]", prop.index, prop.term)
 			d.proposals = d.proposals[1:]
 			continue
 		}
@@ -192,7 +190,7 @@ func (d *peerMsgHandler) doneResp(resp *raft_cmdpb.RaftCmdResponse, entry *eraft
 		prop.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 		prop.cb.Done(resp)
 		// }
-		log.DIYf("doneResp", "server response [%v,%v]", prop.index, prop.term)
+		// log.DIYf("doneResp", "server response [%v,%v]", prop.index, prop.term)
 		d.proposals = d.proposals[1:]
 	}
 	// log.DIYf("doneresp", "finish resp, handle %v resps", respCount)
@@ -305,14 +303,14 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	}
 
 	if cb != nil {
-		log.DIYf("propose", "client propose [%v,%v] send to %v", d.nextProposalIndex(), d.Term(), d.PeerId())
+		// log.DIYf("propose", "client propose [%v,%v] send to %v", d.nextProposalIndex(), d.Term(), d.PeerId())
 		d.proposals = append(d.proposals, &proposal{
 			index: d.nextProposalIndex(),
 			term:  d.Term(),
 			cb:    cb,
 		})
 	} else {
-		log.DIYf("propose", "admin request [%v,%v] send to %v", d.nextProposalIndex(), d.Term(), d.PeerId())
+		// log.DIYf("propose", "admin request [%v,%v] send to %v", d.nextProposalIndex(), d.Term(), d.PeerId())
 	}
 
 	if err := d.RaftGroup.Propose(data); err != nil {

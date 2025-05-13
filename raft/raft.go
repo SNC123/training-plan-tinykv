@@ -258,12 +258,12 @@ func (r *Raft) maybeUpdateCommit(index uint64) {
 		if committed_count > len(r.Prs)/2 {
 			if index > r.RaftLog.committed {
 
-				log.DIYf("maybeUpdateCommit", "raft %v(leader) updated committed from %v to %v",
-					r.id, r.RaftLog.committed, index,
-				)
-				for id, progress := range r.Prs {
-					log.DIYf("maybeUpdateCommit", "raft %v matchIndex = %v", id, progress.Match)
-				}
+				// log.DIYf("maybeUpdateCommit", "raft %v(leader) updated committed from %v to %v",
+				// 	r.id, r.RaftLog.committed, index,
+				// )
+				// for id, progress := range r.Prs {
+				// 	log.DIYf("maybeUpdateCommit", "raft %v matchIndex = %v", id, progress.Match)
+				// }
 				r.RaftLog.committed = index
 				// 按照hint4 要求，commit更新后立刻广播
 				// log.DIYf("maybeUpdateCommit", "broadcast sendappend")
@@ -344,15 +344,15 @@ func (r *Raft) sendAppend(to uint64) bool {
 	nextIndex := prs.Next
 	prevIndex := nextIndex - 1
 
-	if r.debugCondtion() {
-		log.DIYf("debugCondition", "raft %v (leader) send prevIndex = %v commit = %v  to %v",
-			r.id, prevIndex, r.RaftLog.committed, to,
-		)
-	}
+	// if r.debugCondtion() {
+	// 	log.DIYf("debugCondition", "raft %v (leader) send prevIndex = %v commit = %v  to %v",
+	// 		r.id, prevIndex, r.RaftLog.committed, to,
+	// 	)
+	// }
 
 	prevTerm, err := r.RaftLog.Term(prevIndex)
 	if err == ErrCompacted {
-		log.DIYf("send append term", "raft %v required Index %v is compacted", to, prevIndex)
+		// log.DIYf("send append term", "raft %v required Index %v is compacted", to, prevIndex)
 		r.sendSnapshot(to)
 		return false
 	} else if err != nil {
@@ -447,7 +447,7 @@ func (r *Raft) sendPropose(to uint64, ents []*pb.Entry) {
 
 func (r *Raft) sendSnapshot(to uint64) {
 	// log.DIYf("send snapshot", "from %v to %v", r.id, to)
-	log.DIYf("snapshot", "raft %v is getting snapshot", r.id)
+	// log.DIYf("snapshot", "raft %v is getting snapshot", r.id)
 	if r.RaftLog.pendingSnapshot == nil {
 		snapshot, err := r.RaftLog.storage.Snapshot()
 		if err != nil {
@@ -469,7 +469,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 	// 	}
 	// 	panic(err)
 	// }
-	log.DIYf("snapshot", "raft %v send snapshot to %v", r.id, to)
+	// log.DIYf("snapshot", "raft %v send snapshot to %v", r.id, to)
 	r.sendMsg(pb.Message{
 		MsgType:  pb.MessageType_MsgSnapshot,
 		From:     r.id,
@@ -485,14 +485,14 @@ func (r *Raft) sendSnapshot(to uint64) {
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	r.electionElapsed++
-	count, left, right := r.RaftLog.maybeCompact()
+	r.RaftLog.maybeCompact()
 	// log.DIYf("all", "%v r.id: %d, r.Term: %d, r.Lead: %d, r.election: %d, tick: %d, r.heartbeat: %d, r.heartelpased: %d, FirstIndex: %d, LastIndex: %d, Commited: %d, Applied: %d",
 	// 	r.State, r.id, r.Term, r.Lead, r.electionTimeout, r.electionElapsed, r.heartbeatTimeout, r.heartbeatElapsed,
 	// 	r.RaftLog.entries[0].Index+1, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied,
 	// )
-	if count > 0 {
-		log.DIYf("compact", "raft %v compacted %v entries [%v %v]", r.id, count, left, right)
-	}
+	// if count > 0 {
+	// 	log.DIYf("compact", "raft %v compacted %v entries [%v %v]", r.id, count, left, right)
+	// }
 	switch r.State {
 	case StateFollower, StateCandidate:
 		if r.electionElapsed >= r.randomizedElectionTimeout {
@@ -506,7 +506,7 @@ func (r *Raft) tick() {
 			r.electionElapsed = 0
 			aliveCount := len(r.alive)
 			if aliveCount*2 <= len(r.Prs) {
-				log.DIYf("leader resgin", "raft %v regisn", r.id)
+				// log.DIYf("leader resgin", "raft %v resign", r.id)
 				r.becomeFollower(r.Term, 0)
 				r.RaftLog.pendingSnapshot = nil
 				return
@@ -553,7 +553,7 @@ func (r *Raft) becomeCandidate() {
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
-	log.DIYf("becomeLeader", "raft %v become leader and term = %v", r.id, r.Term)
+	// log.DIYf("becomeLeader", "raft %v become leader and term = %v", r.id, r.Term)
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
 	r.alive = make(map[uint64]bool)
@@ -692,11 +692,11 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		}
 	case pb.MessageType_MsgAppendResponse:
 
-		if r.debugCondtion() {
-			log.DIYf("debugCondition", "raft %v (leader) reveice [%v,%v] commit = %v  from %v",
-				r.id, m.Index, m.Term, m.Commit, m.From,
-			)
-		}
+		// if r.debugCondtion() {
+		// 	log.DIYf("debugCondition", "raft %v (leader) reveice [%v,%v] commit = %v  from %v",
+		// 		r.id, m.Index, m.Term, m.Commit, m.From,
+		// 	)
+		// }
 
 		// log.DIYf("msg append resp", "receive resp from %v", m.From)
 		r.alive[m.From] = true
@@ -910,7 +910,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 			r.sendAppendResp(m.From, true)
 		}
 
-		log.DIYf("handle snapshot", "raft %v memory log set matchIdx = %v", r.id, metadata.Index)
+		// log.DIYf("handle snapshot", "raft %v memory log set matchIdx = %v", r.id, metadata.Index)
 		r.sendAppendResp(m.From, false)
 	}
 }

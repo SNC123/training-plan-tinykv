@@ -262,7 +262,6 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			time.Sleep(electionTimeout)
 		}
 
-		log.DIYf("test", "wait for clients")
 		// log.Printf("wait for clients\n")
 		<-ch_clients
 
@@ -272,7 +271,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			for i := 1; i <= nservers; i++ {
 				cluster.StopServer(uint64(i))
 			}
-			log.DIYf("test", "stoppped all servers")
+			log.DIYf("test", "stopped all servers")
 			// Wait for a while for servers to shutdown, since
 			// shutdown isn't a real crash and isn't instantaneous
 			time.Sleep(electionTimeout)
