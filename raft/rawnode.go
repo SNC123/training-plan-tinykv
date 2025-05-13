@@ -18,6 +18,7 @@ import (
 	"errors"
 	"reflect"
 
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -164,11 +165,9 @@ func (rn *RawNode) Ready() Ready {
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         rn.Raft.msgs,
-		SoftState:        nil,
-		HardState:        pb.HardState{},
 	}
 
-	if rn.Raft.RaftLog.pendingSnapshot != nil {
+	if rn.Raft.State != StateLeader && rn.Raft.RaftLog.pendingSnapshot != nil {
 		rd.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
 	}
 
@@ -206,7 +205,7 @@ func (rn *RawNode) HasReady() bool {
 	if len(rn.Raft.msgs) > 0 {
 		return true
 	}
-	if rn.Raft.RaftLog.pendingSnapshot != nil {
+	if rn.Raft.State != StateLeader && rn.Raft.RaftLog.pendingSnapshot != nil {
 		return true
 	}
 	return false
@@ -223,13 +222,26 @@ func (rn *RawNode) Advance(rd Ready) {
 	if len(rd.CommittedEntries) > 0 {
 		last := rd.CommittedEntries[len(rd.CommittedEntries)-1]
 		rn.Raft.RaftLog.applied = last.Index
+
+		var state string
+		if rn.Raft.State == StateLeader {
+			state = "leader"
+		} else {
+			state = "follower"
+		}
+		log.DIYf("advance", "raft %v (%v) applied entries [%v-%v] committed = %v, applied = %v",
+			rn.Raft.id, state,
+			rd.CommittedEntries[0].Index, rd.CommittedEntries[len(rd.CommittedEntries)-1].Index,
+			rn.Raft.RaftLog.committed, rn.Raft.RaftLog.applied,
+		)
 	}
 	rn.Raft.msgs = nil
 	rn.prevSoftState = &SoftState{Lead: rn.Raft.Lead, RaftState: rn.Raft.State}
 	rn.prevHardState = pb.HardState{Term: rn.Raft.Term, Vote: rn.Raft.Vote, Commit: rn.Raft.RaftLog.committed}
-	rn.Raft.RaftLog.pendingSnapshot = nil
-	// 触发RaftGC
-	rn.Raft.RaftLog.maybeCompact()
+	if !IsEmptySnap(&rd.Snapshot) {
+		rn.Raft.RaftLog.pendingSnapshot = nil
+	}
+
 }
 
 // GetProgress return the Progress of this node and its peers, if this
@@ -242,9 +254,4 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 		}
 	}
 	return prs
-}
-
-// TransferLeader tries to transfer leadership to the given transferee.
-func (rn *RawNode) TransferLeader(transferee uint64) {
-	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
 }

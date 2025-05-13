@@ -14,7 +14,6 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
-	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
@@ -41,6 +40,42 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	return &peerMsgHandler{
 		peer: peer,
 		ctx:  ctx,
+	}
+}
+
+func (d *peerMsgHandler) apply(ready *raft.Ready) {
+	// 应用已提交日志
+	if len(ready.CommittedEntries) > 0 {
+		startIndex := ready.CommittedEntries[0].Index
+		lastIndex := ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
+		log.DIYf("raft ready", "raft %v applying committed Entries [%v,%v]", d.PeerId(), startIndex, lastIndex)
+		for _, ent := range ready.CommittedEntries {
+			if ent.EntryType == eraftpb.EntryType_EntryNormal {
+				if len(ent.Data) == 0 {
+					continue
+				}
+				cmd := raft_cmdpb.RaftCmdRequest{}
+				if err := cmd.Unmarshal(ent.Data); err != nil {
+					log.Panicf("Failed to unmarshal RaftCmdRequest: %v", err)
+				}
+				resp := d.applyRaftCommand(&cmd, ent.Index)
+				d.doneResp(resp, &ent)
+
+			} else {
+				panic("[handleRaftReady] The handle of EntryType ConfChange is not yet implemented")
+			}
+		}
+	}
+
+	if len(d.proposals) > 1 && d.peer.RaftGroup.Raft.State == raft.StateLeader {
+		log.DIYf("apply", "raft %v committed %v applied %v",
+			d.PeerId(), d.RaftGroup.Raft.RaftLog.GetCommitted(), d.RaftGroup.Raft.RaftLog.GetApplied(),
+		)
+		for id, prs := range d.RaftGroup.Raft.Prs {
+			log.DIYf("apply", "raft %v matchIndex = %v", id, prs.Match)
+		}
+		log.DIYf("apply", "raft %v unhandled proposals :%v", d.PeerId(), len(d.proposals))
+		log.DIYf("apply", "first = [%v,%v]", d.proposals[0].index, d.proposals[0].term)
 	}
 }
 
@@ -94,16 +129,6 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest, index 
 				BindRespError(resp, err)
 				return resp
 			}
-			// 测试是否真的写入
-			// value, err := engine_util.GetCF(d.peerStorage.Engines.Kv, putReq.Cf, putReq.Key)
-			// if err != nil {
-			// 	panic("[applyRaftCommand] Failed to PutCF")
-			// }
-			// log.DIYf("apply put", "region %v write to %v target %s get %s",
-			// 	d.regionId, d.storeID(),
-			// 	putReq.Value, value)
-
-			// log.DIYf("apply raft cmd", "resp %v err %v", resp, err)
 
 			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
 				CmdType: raft_cmdpb.CmdType_Put,
@@ -131,11 +156,6 @@ func (d *peerMsgHandler) applyRaftCommand(req *raft_cmdpb.RaftCmdRequest, index 
 			})
 		}
 	}
-	// 修改并持久化appiled index
-	d.peerStorage.applyState.AppliedIndex = index
-	kvWB := new(engine_util.WriteBatch)
-	kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
-	kvWB.WriteToDB(d.peerStorage.Engines.Kv)
 
 	return resp
 }
@@ -182,11 +202,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
 	}
-	// HandleRaftReady中需要完成（按顺序）：
-	// 1. Raft软状态更新（lead和RaftState）
-	// 2. 持久化日志条目（通过SaveReadyState持久化HardState和日志）
-	// 3. 应用已提交日志
-	// 4. 通过网络发送 Raft 消息给其他节点
 	raftGroup := *d.peer.RaftGroup
 	// Your Code Here (2B).
 	if !raftGroup.HasReady() {
@@ -204,40 +219,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if err != nil {
 		panic(err)
 	}
-
-	// 应用已提交日志
-	if len(ready.CommittedEntries) > 0 {
-		startIndex := ready.CommittedEntries[0].Index
-		lastIndex := ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
-		log.DIYf("raft ready", "raft %v applying committed Entries [%v,%v]", d.PeerId(), startIndex, lastIndex)
-		for _, ent := range ready.CommittedEntries {
-			if ent.EntryType == pb.EntryType_EntryNormal {
-				if len(ent.Data) == 0 {
-					continue
-				}
-				cmd := raft_cmdpb.RaftCmdRequest{}
-				if err := cmd.Unmarshal(ent.Data); err != nil {
-					log.Panicf("Failed to unmarshal RaftCmdRequest: %v", err)
-				}
-
-				resp := d.applyRaftCommand(&cmd, ent.Index)
-				d.doneResp(resp, &ent)
-
-			} else {
-				panic("[handleRaftReady] The handle of EntryType ConfChange is not yet implemented")
-			}
-		}
-	}
-	if len(d.proposals) > 0 && d.peer.RaftGroup.Raft.State == raft.StateLeader {
-		log.DIYf("raft ready", "raft %v unhandled proposals :%v", d.PeerId(), len(d.proposals))
-		log.DIYf("raft ready", "first = [%v,%v]", d.proposals[0].index, d.proposals[0].term)
-	}
-
+	// 应用entries
+	d.apply(&ready)
 	// 发送消息(OPTIMIZE: 异步处理)
 	if len(ready.Messages) > 0 {
 		d.Send(d.ctx.trans, ready.Messages)
 	}
-
 	d.RaftGroup.Advance(ready)
 }
 

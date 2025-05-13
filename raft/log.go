@@ -92,20 +92,21 @@ func newLog(storage Storage) *RaftLog {
 // We need to compact the log entries in some point of time like
 // storage compact stabled log entries prevent the log entries
 // grow unlimitedly in memory
-func (l *RaftLog) maybeCompact() {
+func (l *RaftLog) maybeCompact() (uint64, uint64, uint64) {
 	// Your Code Here (2C).
 
 	persistFirstIndex, err := l.storage.FirstIndex()
 	if err != nil || len(l.entries) <= 1 {
-		return
+		return 0, 0, 0
 	}
 	dummyIndex := l.entries[0].Index
 	memoryFirstIndex := dummyIndex + 1
 	if memoryFirstIndex < persistFirstIndex {
 		compactOffset := persistFirstIndex - dummyIndex
-		// log.DIYf("compact", "%v entreis", compactOffset+1)
-		l.entries = l.entries[compactOffset:]
+		l.entries = l.entries[compactOffset-1:]
+		return persistFirstIndex - memoryFirstIndex, memoryFirstIndex, persistFirstIndex - 1
 	}
+	return 0, 0, 0
 }
 
 // allEntries return all the entries not compacted.
@@ -190,4 +191,12 @@ func (l *RaftLog) EntriesFrom(from uint64) ([]pb.Entry, error) {
 
 	offset := int(from - dummyIndex)
 	return l.entries[offset:], nil
+}
+
+func (l *RaftLog) GetCommitted() uint64 {
+	return l.committed
+}
+
+func (l *RaftLog) GetApplied() uint64 {
+	return l.applied
 }

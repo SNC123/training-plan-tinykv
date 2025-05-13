@@ -182,7 +182,7 @@ func newRaft(c *Config) *Raft {
 		panic("[newRaft] Failed to get persisted last entry's index ")
 	}
 
-	_, confState, err := c.Storage.InitialState()
+	hardState, confState, err := c.Storage.InitialState()
 	if err != nil {
 		panic("[newRaft] Failed to get InitialState")
 	}
@@ -205,14 +205,16 @@ func newRaft(c *Config) *Raft {
 		votes[id] = false
 	}
 
-	hardState, _, _ := c.Storage.InitialState()
+	log := newLog(c.Storage)
+	log.committed = max(log.committed, hardState.Commit)
+	log.applied = max(log.applied, c.Applied)
 
 	new_raft := &Raft{
 		id:               c.ID,
 		Term:             hardState.Term,
 		Vote:             hardState.Vote,
 		Prs:              prs,
-		RaftLog:          newLog(c.Storage),
+		RaftLog:          log,
 		votes:            votes,
 		State:            StateFollower,
 		heartbeatTimeout: c.HeartbeatTick,
@@ -255,6 +257,13 @@ func (r *Raft) maybeUpdateCommit(index uint64) {
 		}
 		if committed_count > len(r.Prs)/2 {
 			if index > r.RaftLog.committed {
+
+				log.DIYf("maybeUpdateCommit", "raft %v(leader) updated committed from %v to %v",
+					r.id, r.RaftLog.committed, index,
+				)
+				for id, progress := range r.Prs {
+					log.DIYf("maybeUpdateCommit", "raft %v matchIndex = %v", id, progress.Match)
+				}
 				r.RaftLog.committed = index
 				// 按照hint4 要求，commit更新后立刻广播
 				// log.DIYf("maybeUpdateCommit", "broadcast sendappend")
@@ -285,6 +294,20 @@ func (r *Raft) broadcast(f func(id uint64)) {
 			continue
 		}
 		f(id)
+	}
+}
+func (r *Raft) getSoftState() SoftState {
+	return SoftState{
+		Lead:      r.Lead,
+		RaftState: r.State,
+	}
+}
+
+func (r *Raft) GetHardState() pb.HardState {
+	return pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
 	}
 }
 
@@ -402,27 +425,36 @@ func (r *Raft) sendPropose(to uint64, ents []*pb.Entry) {
 
 func (r *Raft) sendSnapshot(to uint64) {
 	// log.DIYf("send snapshot", "from %v to %v", r.id, to)
-	var snapshot = pb.Snapshot{}
 	log.DIYf("snapshot", "raft %v is getting snapshot", r.id)
-	for {
-		// log.DIYf("snapshot", "waiting")
-		snap, err := r.RaftLog.storage.Snapshot()
-		if err == nil {
-			// log.DIYf("snapshot", "get snapshot successfully")
-			snapshot = snap
-			break
+	if r.RaftLog.pendingSnapshot == nil {
+		snapshot, err := r.RaftLog.storage.Snapshot()
+		if err != nil {
+			return
 		}
-		if err == ErrSnapshotTemporarilyUnavailable {
-			continue
-		}
-		panic(err)
+		r.RaftLog.pendingSnapshot = &snapshot
 	}
+	// var snapshot = pb.Snapshot{}
+	// for {
+	// 	// log.DIYf("snapshot", "waiting")
+	// 	snap, err := r.RaftLog.storage.Snapshot()
+	// 	if err == nil {
+	// 		// log.DIYf("snapshot", "get snapshot successfully")
+	// 		snapshot = snap
+	// 		break
+	// 	}
+	// 	if err == ErrSnapshotTemporarilyUnavailable {
+	// 		continue
+	// 	}
+	// 	panic(err)
+	// }
 	log.DIYf("snapshot", "raft %v send snapshot to %v", r.id, to)
 	r.sendMsg(pb.Message{
 		MsgType:  pb.MessageType_MsgSnapshot,
 		From:     r.id,
 		To:       to,
-		Snapshot: &snapshot,
+		Term:     r.Term,
+		Index:    r.RaftLog.LastIndex(),
+		Snapshot: r.RaftLog.pendingSnapshot,
 	})
 }
 
@@ -431,6 +463,14 @@ func (r *Raft) sendSnapshot(to uint64) {
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	r.electionElapsed++
+	count, left, right := r.RaftLog.maybeCompact()
+	// log.DIYf("all", "%v r.id: %d, r.Term: %d, r.Lead: %d, r.election: %d, tick: %d, r.heartbeat: %d, r.heartelpased: %d, FirstIndex: %d, LastIndex: %d, Commited: %d, Applied: %d",
+	// 	r.State, r.id, r.Term, r.Lead, r.electionTimeout, r.electionElapsed, r.heartbeatTimeout, r.heartbeatElapsed,
+	// 	r.RaftLog.entries[0].Index+1, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied,
+	// )
+	if count > 0 {
+		log.DIYf("compact", "raft %v compacted %v entries [%v %v]", r.id, count, left, right)
+	}
 	switch r.State {
 	case StateFollower, StateCandidate:
 		if r.electionElapsed >= r.randomizedElectionTimeout {
@@ -446,6 +486,7 @@ func (r *Raft) tick() {
 			if aliveCount*2 <= len(r.Prs) {
 				log.DIYf("leader resgin", "raft %v regisn", r.id)
 				r.becomeFollower(r.Term, 0)
+				r.RaftLog.pendingSnapshot = nil
 				return
 			}
 			r.alive = make(map[uint64]bool)
@@ -545,6 +586,7 @@ func (r *Raft) Step(m pb.Message) error {
 	// 任何角色收到任何更大term的消息，应该强制变为follower
 	if r.Term < m.Term {
 		r.becomeFollower(m.Term, 0) // 此时并不知道谁是leader
+		r.RaftLog.pendingSnapshot = nil
 	}
 
 	switch r.State {

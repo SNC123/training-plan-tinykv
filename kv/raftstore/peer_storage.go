@@ -364,6 +364,11 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// 更新raftState
 	ps.raftState.LastIndex = snapshot.Metadata.Index
 	ps.raftState.LastTerm = snapshot.Metadata.Term
+	ps.raftState.HardState = &pb.HardState{
+		Commit: snapshot.Metadata.Index,
+		Term:   snapshot.Metadata.Term,
+		Vote:   ps.raftState.HardState.Vote,
+	}
 	raftWB.SetMeta(meta.RaftStateKey(newRegion.Id), ps.raftState)
 
 	ps.region = newRegion
@@ -375,7 +380,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 
 	ps.snapState.StateType = snap.SnapState_Applying
 
-	notifier := make(chan bool)
+	notifier := make(chan bool, 1)
 
 	ps.regionSched <- &runner.RegionTaskApply{
 		RegionId: applySnapResult.Region.Id,
@@ -421,12 +426,15 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
 
 	applySnapResult := &ApplySnapResult{}
-	if !reflect.DeepEqual(ready.Snapshot, pb.Snapshot{}) {
+	if !raft.IsEmptySnap(&ready.Snapshot) && ps.validateSnap(&ready.Snapshot) {
 		result, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 		if err != nil {
 			return nil, err
 		}
 		applySnapResult = result
+	}
+	if len(ready.CommittedEntries) > 0 {
+		ps.applyState.AppliedIndex = ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
 	}
 
 	/* === 数据写入Engine === */
