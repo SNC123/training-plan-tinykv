@@ -149,10 +149,6 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 
-	if l.pendingSnapshot != nil {
-		return l.pendingSnapshot.Metadata.Index
-	}
-
 	// Raftlog的日志缓存（entries）有数据
 	if len(l.entries) > 0 {
 		return l.entries[len(l.entries)-1].Index
@@ -164,10 +160,6 @@ func (l *RaftLog) LastIndex() uint64 {
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
-
-	if l.pendingSnapshot != nil {
-		return l.pendingSnapshot.Metadata.Term, nil
-	}
 
 	dummyIndex := l.entries[0].Index
 	if i < dummyIndex {
