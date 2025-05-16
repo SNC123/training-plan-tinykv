@@ -7,6 +7,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/kv/storage/raft_storage"
 	"github.com/pingcap-incubator/tinykv/kv/transaction/latches"
+	"github.com/pingcap-incubator/tinykv/kv/transaction/mvcc"
 	coppb "github.com/pingcap-incubator/tinykv/proto/pkg/coprocessor"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/tinykvpb"
@@ -47,20 +48,200 @@ func (server *Server) Snapshot(stream tinykvpb.TinyKv_SnapshotServer) error {
 	return server.storage.(*raft_storage.RaftStorage).Snapshot(stream)
 }
 
+func (server *Server) newTxn(ctx *kvrpcpb.Context, version uint64) *mvcc.MvccTxn {
+	reader, _ := server.storage.Reader(ctx)
+	txn := mvcc.NewMvccTxn(reader, version)
+	return txn
+}
+
 // Transactional API.
 func (server *Server) KvGet(_ context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb.GetResponse, error) {
-	// Your Code Here (4B).
-	return nil, nil
+	resp := &kvrpcpb.GetResponse{}
+	txn := server.newTxn(req.Context, req.Version)
+	key := req.Key
+	lock, err := txn.GetLock(key)
+	if err != nil {
+		return nil, err
+	}
+	if lock != nil && lock.Ts <= txn.StartTS {
+		resp.Error = &kvrpcpb.KeyError{
+			Locked: &kvrpcpb.LockInfo{
+				PrimaryLock: lock.Primary,
+				LockVersion: lock.Ts,
+				LockTtl:     lock.Ttl,
+				Key:         key,
+			},
+		}
+		return resp, nil
+	}
+	value, err := txn.GetValue(key)
+	if err != nil {
+		return nil, err
+	}
+	if value == nil {
+		resp.NotFound = true
+		return resp, nil
+	}
+	resp.Value = value
+	return resp, nil
 }
 
 func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest) (*kvrpcpb.PrewriteResponse, error) {
-	// Your Code Here (4B).
-	return nil, nil
+	resp := &kvrpcpb.PrewriteResponse{}
+	resp.Errors = []*kvrpcpb.KeyError{}
+	resp.RegionError = nil
+	var keys [][]byte
+
+	for _, mutation := range req.Mutations {
+		keys = append(keys, mutation.Key)
+	}
+	server.Latches.WaitForLatches(keys)
+	defer server.Latches.ReleaseLatches(keys)
+
+	txn := server.newTxn(req.Context, req.StartVersion)
+
+	for _, mutation := range req.Mutations {
+		// 1. 检测是否已有锁，若有锁则返回Locked
+		lock, err := txn.GetLock(mutation.Key)
+		if err != nil {
+			return nil, err
+		}
+		if lock != nil {
+			resp.Errors = append(resp.Errors,
+				&kvrpcpb.KeyError{
+					Locked: &kvrpcpb.LockInfo{
+						PrimaryLock: req.PrimaryLock,
+						LockVersion: lock.Ts,
+						Key:         mutation.Key,
+						LockTtl:     req.LockTtl,
+					},
+				},
+			)
+		}
+		txn.PutLock(mutation.Key, &mvcc.Lock{
+			Primary: req.PrimaryLock,
+			Ts:      txn.StartTS,
+			Ttl:     req.LockTtl,
+			Kind:    mvcc.WriteKindFromProto(mutation.Op),
+		})
+	}
+
+	if len(resp.Errors) > 0 || resp.RegionError != nil {
+		return resp, nil
+	}
+
+	for _, mutation := range req.Mutations {
+		// 2. 检测write中是否存在重叠的事务，若有返回WriteConflict
+		mostRecentWrite, commitTs, err := txn.MostRecentWrite(mutation.Key)
+		if err != nil {
+			panic(err)
+		}
+		if mostRecentWrite != nil && commitTs >= txn.StartTS {
+			resp.Errors = append(resp.Errors,
+				&kvrpcpb.KeyError{
+					Conflict: &kvrpcpb.WriteConflict{
+						StartTs:    txn.StartTS,
+						ConflictTs: mostRecentWrite.StartTS,
+						Key:        mutation.Key,
+						Primary:    req.PrimaryLock,
+					},
+				},
+			)
+		}
+		txn.PutValue(mutation.Key, mutation.Value)
+	}
+
+	if len(resp.Errors) > 0 || resp.RegionError != nil {
+		return resp, nil
+	}
+
+	if err := server.storage.Write(req.Context, txn.Writes()); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
 }
 
 func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*kvrpcpb.CommitResponse, error) {
-	// Your Code Here (4B).
-	return nil, nil
+	resp := &kvrpcpb.CommitResponse{}
+	resp.Error = nil
+	resp.RegionError = nil
+
+	server.Latches.WaitForLatches(req.Keys)
+	defer server.Latches.ReleaseLatches(req.Keys)
+
+	if len(req.Keys) == 0 {
+		return resp, nil
+	}
+
+	txn := server.newTxn(req.Context, req.StartVersion)
+
+	for _, key := range req.Keys {
+
+		write, _, err := txn.MostRecentWrite(key)
+		if err != nil {
+			panic(err)
+		}
+		if write != nil && write.StartTS == txn.StartTS {
+			if write.Kind == mvcc.WriteKindRollback {
+				resp.Error = &kvrpcpb.KeyError{
+					Abort: "Transaction has been rollbaked",
+				}
+				return resp, nil
+			}
+			continue
+		}
+
+		lock, err := txn.GetLock(key)
+		if err != nil {
+			panic(err)
+		}
+		if lock == nil {
+			// lock不存在且GetValue不存在，说明Prewrite并没有执行
+			value, err := txn.GetValue(key)
+			if err != nil {
+				panic(err)
+			}
+			if value == nil {
+				return resp, nil
+			}
+			resp.Error = &kvrpcpb.KeyError{
+				Retryable: "Lock missed",
+			}
+			return resp, nil
+		}
+		if lock.Ts != txn.StartTS {
+			resp.Error = &kvrpcpb.KeyError{
+				Retryable: "Lock missed",
+			}
+			return resp, nil
+		}
+
+		// primaryLock, err := txn.GetLock(lock.Primary)
+		// if err != nil {
+		// 	panic(err)
+		// }
+		// if primaryLock == nil {
+		// 	resp.Error = &kvrpcpb.KeyError{
+		// 		Retryable: "Primary lock missed",
+		// 	}
+		// 	return resp, nil
+		// }
+
+		txn.DeleteLock(key)
+		txn.PutWrite(key, req.CommitVersion,
+			&mvcc.Write{
+				StartTS: req.StartVersion,
+				Kind:    lock.Kind,
+			},
+		)
+	}
+
+	if err := server.storage.Write(req.Context, txn.Writes()); err != nil {
+		return resp, err
+	}
+
+	return resp, nil
 }
 
 func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrpcpb.ScanResponse, error) {
