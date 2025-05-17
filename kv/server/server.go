@@ -86,6 +86,12 @@ func (server *Server) KvGet(_ context.Context, req *kvrpcpb.GetRequest) (*kvrpcp
 	return resp, nil
 }
 
+func (server *Server) writeToStorage(context *kvrpcpb.Context, modifies []storage.Modify) {
+	if err := server.storage.Write(context, modifies); err != nil {
+		panic(err)
+	}
+}
+
 func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest) (*kvrpcpb.PrewriteResponse, error) {
 	resp := &kvrpcpb.PrewriteResponse{}
 	resp.Errors = []*kvrpcpb.KeyError{}
@@ -155,9 +161,7 @@ func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest
 		return resp, nil
 	}
 
-	if err := server.storage.Write(req.Context, txn.Writes()); err != nil {
-		return nil, err
-	}
+	server.writeToStorage(req.Context, txn.Writes())
 
 	return resp, nil
 }
@@ -169,10 +173,6 @@ func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*
 
 	server.Latches.WaitForLatches(req.Keys)
 	defer server.Latches.ReleaseLatches(req.Keys)
-
-	if len(req.Keys) == 0 {
-		return resp, nil
-	}
 
 	txn := server.newTxn(req.Context, req.StartVersion)
 
@@ -217,17 +217,6 @@ func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*
 			return resp, nil
 		}
 
-		// primaryLock, err := txn.GetLock(lock.Primary)
-		// if err != nil {
-		// 	panic(err)
-		// }
-		// if primaryLock == nil {
-		// 	resp.Error = &kvrpcpb.KeyError{
-		// 		Retryable: "Primary lock missed",
-		// 	}
-		// 	return resp, nil
-		// }
-
 		txn.DeleteLock(key)
 		txn.PutWrite(key, req.CommitVersion,
 			&mvcc.Write{
@@ -237,31 +226,169 @@ func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*
 		)
 	}
 
-	if err := server.storage.Write(req.Context, txn.Writes()); err != nil {
-		return resp, err
-	}
+	server.writeToStorage(req.Context, txn.Writes())
 
 	return resp, nil
 }
 
 func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrpcpb.ScanResponse, error) {
-	// Your Code Here (4C).
-	return nil, nil
+	resp := &kvrpcpb.ScanResponse{}
+	resp.RegionError = nil
+
+	txn := server.newTxn(req.Context, req.Version)
+
+	scanner := mvcc.NewScanner(req.StartKey, txn)
+
+	var result []*kvrpcpb.KvPair
+
+	for len(result) < int(req.Limit) {
+		key, val, err := scanner.Next()
+		if err != nil {
+			panic(err)
+		}
+		if key == nil {
+			break
+		}
+		if val == nil {
+			continue
+		}
+		result = append(result, &kvrpcpb.KvPair{Key: key, Value: val})
+	}
+	resp.Pairs = result
+	return resp, nil
 }
 
 func (server *Server) KvCheckTxnStatus(_ context.Context, req *kvrpcpb.CheckTxnStatusRequest) (*kvrpcpb.CheckTxnStatusResponse, error) {
-	// Your Code Here (4C).
-	return nil, nil
+	resp := &kvrpcpb.CheckTxnStatusResponse{}
+	resp.RegionError = nil
+
+	txn := server.newTxn(req.Context, req.LockTs)
+
+	currentWrite, commitTs, err := txn.CurrentWrite(req.PrimaryKey)
+	if err != nil {
+		panic(err)
+	}
+	// 正常commit
+	if currentWrite != nil {
+		resp.CommitVersion = commitTs
+		if currentWrite.Kind == mvcc.WriteKindRollback {
+			resp.CommitVersion = 0
+		}
+		resp.Action = kvrpcpb.Action_NoAction
+		return resp, nil
+	}
+
+	primaryLock, err := txn.GetLock(req.PrimaryKey)
+	if err != nil {
+		panic(err)
+	}
+	// primaryLock不存在说明已回滚
+	// 应标记WriteKindRollBack，本身无需执行任何操作
+	if primaryLock == nil {
+		txn.PutWrite(req.PrimaryKey, txn.StartTS, &mvcc.Write{
+			StartTS: req.LockTs,
+			Kind:    mvcc.WriteKindRollback,
+		})
+		server.writeToStorage(req.Context, txn.Writes())
+		resp.Action = kvrpcpb.Action_LockNotExistRollback
+		return resp, nil
+	}
+
+	if primaryLock.Ttl >= mvcc.PhysicalTime(req.CurrentTs)-mvcc.PhysicalTime(req.LockTs) {
+		resp.Action = kvrpcpb.Action_NoAction
+		resp.LockTtl = primaryLock.Ttl
+		return resp, nil
+	}
+
+	// 超时，移除prewrite的lock和data
+	txn.DeleteLock(req.PrimaryKey)
+	txn.DeleteValue(req.PrimaryKey)
+	txn.PutWrite(req.PrimaryKey, req.LockTs, &mvcc.Write{
+		StartTS: req.LockTs,
+		Kind:    mvcc.WriteKindRollback,
+	})
+	resp.Action = kvrpcpb.Action_TTLExpireRollback
+
+	server.writeToStorage(req.Context, txn.Writes())
+
+	return resp, nil
 }
 
 func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollbackRequest) (*kvrpcpb.BatchRollbackResponse, error) {
-	// Your Code Here (4C).
-	return nil, nil
+	resp := &kvrpcpb.BatchRollbackResponse{}
+	resp.RegionError = nil
+
+	txn := server.newTxn(req.Context, req.StartVersion)
+
+	for _, key := range req.Keys {
+		currentWrite, _, err := txn.CurrentWrite(key)
+		if err != nil {
+			panic(err)
+		}
+		if currentWrite != nil {
+			if currentWrite.Kind == mvcc.WriteKindRollback {
+				continue
+			} else {
+				resp.Error = &kvrpcpb.KeyError{
+					Abort: "The write has been committed",
+				}
+				return resp, nil
+			}
+		}
+		lock, err := txn.GetLock(key)
+		if err != nil {
+			panic(err)
+		}
+		// 锁不存在或被另一个事务占据，标记rollback
+		if lock == nil || lock.Ts != txn.StartTS {
+			txn.PutWrite(key, txn.StartTS, &mvcc.Write{
+				StartTS: txn.StartTS,
+				Kind:    mvcc.WriteKindRollback,
+			})
+			server.writeToStorage(req.Context, txn.Writes())
+			return resp, nil
+		}
+
+		txn.DeleteLock(key)
+		txn.DeleteValue(key)
+		txn.PutWrite(key, txn.StartTS, &mvcc.Write{
+			StartTS: txn.StartTS,
+			Kind:    mvcc.WriteKindRollback,
+		})
+	}
+
+	server.writeToStorage(req.Context, txn.Writes())
+
+	return resp, nil
 }
 
 func (server *Server) KvResolveLock(_ context.Context, req *kvrpcpb.ResolveLockRequest) (*kvrpcpb.ResolveLockResponse, error) {
-	// Your Code Here (4C).
-	return nil, nil
+	resp := &kvrpcpb.ResolveLockResponse{}
+
+	txn := server.newTxn(req.Context, req.StartVersion)
+	KLs, err := mvcc.AllLocksForTxn(txn)
+	if err != nil {
+		panic(err)
+	}
+
+	var keys [][]byte
+	for _, KL := range KLs {
+		keys = append(keys, KL.Key)
+	}
+
+	if req.CommitVersion == 0 {
+		server.KvBatchRollback(context.TODO(), &kvrpcpb.BatchRollbackRequest{
+			StartVersion: req.StartVersion,
+			Keys:         keys,
+		})
+	} else {
+		server.KvCommit(context.TODO(), &kvrpcpb.CommitRequest{
+			StartVersion:  req.StartVersion,
+			CommitVersion: req.CommitVersion,
+			Keys:          keys,
+		})
+	}
+	return resp, nil
 }
 
 // SQL push down commands.
